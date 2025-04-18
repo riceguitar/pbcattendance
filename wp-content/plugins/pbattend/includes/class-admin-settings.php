@@ -77,7 +77,20 @@ class PBAttend_Admin_Settings {
             <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post">
                 <?php wp_nonce_field('pbattend_manual_import', 'pbattend_nonce'); ?>
                 <input type="hidden" name="action" value="pbattend_manual_import">
-                <?php submit_button(__('Import Now', 'pbattend'), 'secondary', 'submit', false); ?>
+                <?php submit_button(__('Import Now', 'pbattend'), 'primary', 'submit', false); ?>
+            </form>
+
+            <hr>
+
+            <h2><?php _e('Reset Importer', 'pbattend'); ?></h2>
+            <p><?php _e('Use this button to reset the importer state. This will clear all tracking of previously imported records, allowing you to reimport everything.', 'pbattend'); ?></p>
+            <p class="description"><?php _e('Warning: This will not delete any existing records, but will allow them to be imported again.', 'pbattend'); ?></p>
+            
+            <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post">
+                <?php wp_nonce_field('pbattend_manual_import', 'pbattend_nonce'); ?>
+                <input type="hidden" name="action" value="pbattend_manual_import">
+                <input type="hidden" name="reset" value="1">
+                <?php submit_button(__('Reset Importer', 'pbattend'), 'secondary', 'submit', false); ?>
             </form>
 
             <hr>

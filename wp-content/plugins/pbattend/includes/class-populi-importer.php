@@ -9,14 +9,17 @@ class PBAttend_Populi_Importer {
     // API Endpoints
     private $endpoints = array(
         'attendance' => '/attendance/detail',
-        'student' => '/people', // Future endpoint for student data
-        'course' => '/courses', // Future endpoint for course data
+        'person' => '/people',
+        'student' => '/people/%d/student',
+        'email' => '/people/%d/emailaddresses'
     );
     
     private $last_import_key = 'pbattend_last_import_time';
     private $processed_records_key = 'pbattend_processed_records';
     private $student_queue_key = 'pbattend_student_import_queue';
     private $import_log_key = 'pbattend_import_log';
+    private $import_state_key = 'pbattend_import_state';
+    private $batch_size = 50; // Number of records to process per batch
 
     public function __construct() {
         // Register the cron schedule
@@ -67,6 +70,24 @@ class PBAttend_Populi_Importer {
     }
 
     /**
+     * Reset the importer state and clear processed records
+     */
+    public function reset_importer() {
+        // Clear all tracking options
+        delete_option($this->last_import_key);
+        delete_option($this->processed_records_key);
+        delete_option($this->import_state_key);
+        delete_option($this->student_queue_key);
+        
+        $this->log_import('Importer state has been reset', 'info');
+        
+        return array(
+            'success' => true,
+            'message' => 'Importer state has been reset successfully'
+        );
+    }
+
+    /**
      * Handle manual import request
      */
     public function handle_manual_import() {
@@ -76,6 +97,26 @@ class PBAttend_Populi_Importer {
 
         // Verify nonce
         check_admin_referer('pbattend_manual_import', 'pbattend_nonce');
+
+        // Check if this is a reset request
+        if (isset($_GET['reset']) && $_GET['reset'] === '1') {
+            $result = $this->reset_importer();
+            set_transient('pbattend_admin_notice', array(
+                'type' => 'success',
+                'message' => $result['message']
+            ), 45);
+            
+            // Redirect back to settings page
+            wp_redirect(add_query_arg(
+                'page',
+                'pbattend-settings',
+                admin_url('edit.php?post_type=pbattend_record')
+            ));
+            exit;
+        }
+
+        // Increase execution time for import
+        set_time_limit(300); // 5 minutes
 
         // Run the import
         $result = $this->import_attendance_records();
@@ -141,7 +182,7 @@ class PBAttend_Populi_Importer {
     }
 
     /**
-     * Import attendance records from Populi
+     * Import attendance records from Populi with pagination and batching
      */
     public function import_attendance_records() {
         $credentials = $this->get_api_credentials();
@@ -153,122 +194,138 @@ class PBAttend_Populi_Importer {
             );
         }
 
-        $last_import_time = get_option($this->last_import_key, '');
-        $processed_records = get_option($this->processed_records_key, array());
-        $new_records_count = 0;
-        $total_processed = 0;
-
-        $this->log_import('Starting attendance import' . ($last_import_time ? ' since ' . $last_import_time : ''));
-
-        // Build the request
-        $request_body = $this->build_request_body($last_import_time);
-        
-        // Log the request details
-        $this->log_import('Making API request to: ' . $this->get_endpoint_url('attendance'));
-        $this->log_import('Request body: ' . json_encode($request_body));
-        
-        // Make the API request
-        $response = wp_remote_post($this->get_endpoint_url('attendance'), array(
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $credentials['api_key']
-            ),
-            'body' => json_encode($request_body)
+        // Get or initialize import state
+        $import_state = get_option($this->import_state_key, array(
+            'last_import_time' => get_option($this->last_import_key, ''),
+            'processed_records' => get_option($this->processed_records_key, array()),
+            'current_page' => 1,
+            'total_processed' => 0,
+            'new_records' => 0,
+            'in_progress' => false
         ));
 
-        if (is_wp_error($response)) {
-            $error_message = 'API request failed: ' . $response->get_error_message();
-            $this->log_import($error_message, 'error');
-            return array(
-                'success' => false,
-                'message' => $error_message
+        // If no import in progress, start a new one
+        if (!$import_state['in_progress']) {
+            $import_state = array(
+                'last_import_time' => current_time('mysql'),
+                'processed_records' => array(),
+                'current_page' => 1,
+                'total_processed' => 0,
+                'new_records' => 0,
+                'in_progress' => true
             );
+            update_option($this->import_state_key, $import_state);
         }
 
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        
-        $this->log_import('API Response Code: ' . $response_code);
-        $this->log_import('API Response Body: ' . $response_body);
+        $this->log_import('Starting/resuming attendance import' . ($import_state['last_import_time'] ? ' since ' . $import_state['last_import_time'] : ''));
 
-        $response_data = json_decode($response_body, true);
-
-        if (empty($response_data) || !isset($response_data['data']) || !is_array($response_data['data'])) {
-            $this->log_import('No valid records found in response: ' . $response_body, 'error');
-            return array(
-                'success' => false,
-                'message' => 'Invalid response from API'
-            );
-        }
-
-        $records = $response_data['data'];
-        $this->log_import(sprintf('Found %d records to process', count($records)));
-
-        // Process each record
-        foreach ($records as $record) {
-            $total_processed++;
-            
-            // Skip if we've already processed this record
-            if (!isset($record['report_data']['row_id'])) {
-                $this->log_import('Skipping record: Missing row_id', 'warning');
-                continue;
-            }
-
-            $record_id = $record['report_data']['row_id'];
-            if (in_array($record_id, $processed_records)) {
-                $this->log_import('Skipping already processed record: ' . $record_id);
-                continue;
-            }
-
-            // Create or update the attendance record
-            $result = $this->create_attendance_record($record);
-            if ($result) {
-                $this->log_import(sprintf(
-                    'Successfully created attendance record for %s in %s (ID: %s)',
-                    $record['display_name'] ?? 'Unknown Student',
-                    $record['report_data']['course_name'] ?? 'Unknown Course',
-                    $record_id
+        try {
+            while (true) {
+                // Build the request
+                $request_body = $this->build_request_body($import_state['last_import_time'], $import_state['current_page']);
+                
+                // Make the API request
+                $response = wp_remote_post($this->get_endpoint_url('attendance'), array(
+                    'headers' => array(
+                        'Content-Type' => 'application/json',
+                        'Authorization' => 'Bearer ' . $credentials['api_key']
+                    ),
+                    'body' => json_encode($request_body),
+                    'timeout' => 30
                 ));
-                $new_records_count++;
-            } else {
-                $this->log_import('Failed to create attendance record for record ID: ' . $record_id, 'error');
+
+                if (is_wp_error($response)) {
+                    throw new Exception('API request failed: ' . $response->get_error_message());
+                }
+
+                $response_data = json_decode(wp_remote_retrieve_body($response), true);
+
+                if (empty($response_data) || !isset($response_data['data']) || !is_array($response_data['data'])) {
+                    break;
+                }
+
+                $records = $response_data['data'];
+                $batch_count = 0;
+
+                foreach ($records as $record) {
+                    if ($batch_count >= $this->batch_size) {
+                        // Save progress and continue in next batch
+                        update_option($this->import_state_key, $import_state);
+                        return array(
+                            'success' => true,
+                            'total_processed' => $import_state['total_processed'],
+                            'new_records' => $import_state['new_records'],
+                            'message' => sprintf(
+                                'Batch processed. Total: %d, New: %d. More records to process.',
+                                $import_state['total_processed'],
+                                $import_state['new_records']
+                            )
+                        );
+                    }
+
+                    $import_state['total_processed']++;
+                    
+                    if (!isset($record['report_data']['row_id'])) {
+                        continue;
+                    }
+
+                    $record_id = $record['report_data']['row_id'];
+                    if (in_array($record_id, $import_state['processed_records'])) {
+                        continue;
+                    }
+
+                    $result = $this->create_attendance_record($record);
+                    if ($result) {
+                        $import_state['new_records']++;
+                        if (isset($record['id'])) {
+                            $this->queue_student_import($record['id']);
+                        }
+                    }
+
+                    $import_state['processed_records'][] = $record_id;
+                    $batch_count++;
+                }
+
+                // Check if there are more pages
+                if (!isset($response_data['has_more']) || !$response_data['has_more']) {
+                    break;
+                }
+
+                $import_state['current_page']++;
             }
 
-            // Add student to import queue if needed
-            if (isset($record['id'])) {
-                $this->queue_student_import($record['id']);
-            }
+            // Import completed successfully
+            update_option($this->last_import_key, $import_state['last_import_time']);
+            update_option($this->processed_records_key, $import_state['processed_records']);
+            update_option($this->import_state_key, array('in_progress' => false));
 
-            // Mark record as processed
-            $processed_records[] = $record_id;
+            return array(
+                'success' => true,
+                'total_processed' => $import_state['total_processed'],
+                'new_records' => $import_state['new_records'],
+                'message' => sprintf(
+                    'Import completed. Processed %d records, %d new records imported.',
+                    $import_state['total_processed'],
+                    $import_state['new_records']
+                )
+            );
+
+        } catch (Exception $e) {
+            // Save progress before throwing error
+            update_option($this->import_state_key, $import_state);
+            
+            $this->log_import($e->getMessage(), 'error');
+            return array(
+                'success' => false,
+                'message' => $e->getMessage()
+            );
         }
-
-        // Update the last import time and processed records
-        update_option($this->last_import_key, current_time('mysql'));
-        update_option($this->processed_records_key, $processed_records);
-
-        $this->log_import(sprintf(
-            'Import completed. Processed %d records, %d new records imported.',
-            $total_processed,
-            $new_records_count
-        ));
-
-        return array(
-            'success' => true,
-            'total_processed' => $total_processed,
-            'new_records' => $new_records_count,
-            'message' => sprintf(
-                'Import completed. Processed %d records, %d new records imported.',
-                $total_processed,
-                $new_records_count
-            )
-        );
     }
 
     /**
-     * Build the request body for the API call
+     * Build the request body for the API call with pagination
      */
-    private function build_request_body($last_import_time) {
+    private function build_request_body($last_import_time, $page = 1) {
         $request = array(
             'filter' => array(
                 '0' => array(
@@ -281,7 +338,9 @@ class PBAttend_Populi_Importer {
                         )
                     )
                 )
-            )
+            ),
+            'page' => $page,
+            'results_per_page' => 200
         );
 
         // Add time filter if we have a last import time
@@ -368,6 +427,139 @@ class PBAttend_Populi_Importer {
     }
 
     /**
+     * Import a student/user from Populi
+     */
+    private function import_student($student_id) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            return false;
+        }
+
+        // Get student details
+        $student_url = sprintf($this->get_endpoint_url('student'), $student_id);
+        $student_response = wp_remote_get($student_url, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            )
+        ));
+
+        if (is_wp_error($student_response)) {
+            $this->log_import('Failed to get student details: ' . $student_response->get_error_message(), 'error');
+            return false;
+        }
+
+        $student_data = json_decode(wp_remote_retrieve_body($student_response), true);
+        if (empty($student_data)) {
+            $this->log_import('Invalid student data received', 'error');
+            return false;
+        }
+
+        // Get person details
+        $person_url = $this->get_endpoint_url('person') . '/' . $student_id;
+        $person_response = wp_remote_get($person_url, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            )
+        ));
+
+        if (is_wp_error($person_response)) {
+            $this->log_import('Failed to get person details: ' . $person_response->get_error_message(), 'error');
+            return false;
+        }
+
+        $person_data = json_decode(wp_remote_retrieve_body($person_response), true);
+        if (empty($person_data)) {
+            $this->log_import('Invalid person data received', 'error');
+            return false;
+        }
+
+        // Get email addresses
+        $email_url = sprintf($this->get_endpoint_url('email'), $student_id);
+        $email_response = wp_remote_get($email_url, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            )
+        ));
+
+        if (is_wp_error($email_response)) {
+            $this->log_import('Failed to get email addresses: ' . $email_response->get_error_message(), 'error');
+            return false;
+        }
+
+        $email_data = json_decode(wp_remote_retrieve_body($email_response), true);
+        $email = '';
+        if (!empty($email_data['data'])) {
+            foreach ($email_data['data'] as $email_record) {
+                if ($email_record['primary'] || empty($email)) {
+                    $email = $email_record['email'];
+                }
+            }
+        }
+
+        if (empty($email)) {
+            $this->log_import('No email address found for student: ' . $student_id, 'error');
+            return false;
+        }
+
+        // Check if user already exists
+        $user = get_user_by('email', $email);
+        if (!$user) {
+            // Create new user
+            $username = sanitize_user($person_data['first_name'] . '.' . $person_data['last_name'], true);
+            $username = $this->generate_unique_username($username);
+            
+            $user_id = wp_create_user(
+                $username,
+                wp_generate_password(),
+                $email
+            );
+
+            if (is_wp_error($user_id)) {
+                $this->log_import('Failed to create user: ' . $user_id->get_error_message(), 'error');
+                return false;
+            }
+
+            $user = get_user_by('id', $user_id);
+        }
+
+        // Update user details
+        wp_update_user(array(
+            'ID' => $user->ID,
+            'first_name' => $person_data['first_name'],
+            'last_name' => $person_data['last_name'],
+            'display_name' => $person_data['display_name'],
+            'role' => 'subscriber'
+        ));
+
+        // Store Populi ID and student ID as user meta
+        update_user_meta($user->ID, 'populi_id', $student_id);
+        update_user_meta($user->ID, 'populi_student_id', $student_data['visible_student_id']);
+
+        $this->log_import(sprintf(
+            'Successfully imported/updated user: %s (ID: %d)',
+            $person_data['display_name'],
+            $user->ID
+        ));
+
+        return $user->ID;
+    }
+
+    /**
+     * Generate a unique username by appending a number if needed
+     */
+    private function generate_unique_username($username) {
+        $original_username = $username;
+        $counter = 1;
+
+        while (username_exists($username)) {
+            $username = $original_username . $counter;
+            $counter++;
+        }
+
+        return $username;
+    }
+
+    /**
      * Queue a student for import
      */
     private function queue_student_import($student_id) {
@@ -375,6 +567,9 @@ class PBAttend_Populi_Importer {
         if (!in_array($student_id, $queue)) {
             $queue[] = $student_id;
             update_option($this->student_queue_key, $queue);
+            
+            // Try to import the student immediately
+            $this->import_student($student_id);
         }
     }
 } 
