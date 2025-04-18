@@ -38,11 +38,32 @@ class PBAttend_Populi_Importer {
     }
 
     /**
+     * Add custom cron interval
+     */
+    public function add_cron_interval($schedules) {
+        $schedules['hourly'] = array(
+            'interval' => 3600, // 60 minutes in seconds
+            'display'  => __('Every Hour', 'pbattend')
+        );
+        return $schedules;
+    }
+
+    /**
+     * Get the Populi API credentials
+     */
+    private function get_api_credentials() {
+        return array(
+            'api_key' => get_option('pbattend_populi_api_key'),
+            'api_base' => get_option('pbattend_populi_api_base', $this->api_base)
+        );
+    }
+
+    /**
      * Get API endpoint URL
      */
     private function get_endpoint_url($endpoint_key) {
-        $base_url = get_option('pbattend_populi_api_base', $this->api_base);
-        return trailingslashit($base_url) . ltrim($this->endpoints[$endpoint_key], '/');
+        $credentials = $this->get_api_credentials();
+        return trailingslashit($credentials['api_base']) . ltrim($this->endpoints[$endpoint_key], '/');
     }
 
     /**
@@ -120,16 +141,6 @@ class PBAttend_Populi_Importer {
     }
 
     /**
-     * Get the Populi API credentials
-     */
-    private function get_api_credentials() {
-        return array(
-            'api_key' => get_option('pbattend_populi_api_key'),
-            'api_url' => get_option('pbattend_populi_api_url', $this->api_url)
-        );
-    }
-
-    /**
      * Import attendance records from Populi
      */
     public function import_attendance_records() {
@@ -152,6 +163,10 @@ class PBAttend_Populi_Importer {
         // Build the request
         $request_body = $this->build_request_body($last_import_time);
         
+        // Log the request details
+        $this->log_import('Making API request to: ' . $this->get_endpoint_url('attendance'));
+        $this->log_import('Request body: ' . json_encode($request_body));
+        
         // Make the API request
         $response = wp_remote_post($this->get_endpoint_url('attendance'), array(
             'headers' => array(
@@ -170,17 +185,23 @@ class PBAttend_Populi_Importer {
             );
         }
 
-        $records = json_decode(wp_remote_retrieve_body($response), true);
-        if (empty($records)) {
-            $this->log_import('No new records found in response');
+        $response_code = wp_remote_retrieve_response_code($response);
+        $response_body = wp_remote_retrieve_body($response);
+        
+        $this->log_import('API Response Code: ' . $response_code);
+        $this->log_import('API Response Body: ' . $response_body);
+
+        $response_data = json_decode($response_body, true);
+
+        if (empty($response_data) || !isset($response_data['data']) || !is_array($response_data['data'])) {
+            $this->log_import('No valid records found in response: ' . $response_body, 'error');
             return array(
-                'success' => true,
-                'total_processed' => 0,
-                'new_records' => 0,
-                'message' => 'No new records found'
+                'success' => false,
+                'message' => 'Invalid response from API'
             );
         }
 
+        $records = $response_data['data'];
         $this->log_import(sprintf('Found %d records to process', count($records)));
 
         // Process each record
@@ -188,8 +209,14 @@ class PBAttend_Populi_Importer {
             $total_processed++;
             
             // Skip if we've already processed this record
+            if (!isset($record['report_data']['row_id'])) {
+                $this->log_import('Skipping record: Missing row_id', 'warning');
+                continue;
+            }
+
             $record_id = $record['report_data']['row_id'];
             if (in_array($record_id, $processed_records)) {
+                $this->log_import('Skipping already processed record: ' . $record_id);
                 continue;
             }
 
@@ -197,18 +224,23 @@ class PBAttend_Populi_Importer {
             $result = $this->create_attendance_record($record);
             if ($result) {
                 $this->log_import(sprintf(
-                    'Created attendance record for %s in %s',
-                    $record['display_name'],
-                    $record['report_data']['course_name']
+                    'Successfully created attendance record for %s in %s (ID: %s)',
+                    $record['display_name'] ?? 'Unknown Student',
+                    $record['report_data']['course_name'] ?? 'Unknown Course',
+                    $record_id
                 ));
+                $new_records_count++;
+            } else {
+                $this->log_import('Failed to create attendance record for record ID: ' . $record_id, 'error');
             }
 
             // Add student to import queue if needed
-            $this->queue_student_import($record['id']);
+            if (isset($record['id'])) {
+                $this->queue_student_import($record['id']);
+            }
 
             // Mark record as processed
             $processed_records[] = $record_id;
-            $new_records_count++;
         }
 
         // Update the last import time and processed records
@@ -274,41 +306,65 @@ class PBAttend_Populi_Importer {
      * Create or update an attendance record
      */
     private function create_attendance_record($record) {
+        if (!isset($record['id']) || !isset($record['report_data'])) {
+            $this->log_import('Invalid record format: Missing required fields', 'error');
+            return false;
+        }
+
         $post_data = array(
             'post_type' => 'pbattend_record',
             'post_status' => 'publish',
             'post_title' => sprintf(
                 '%s - %s (%s)',
-                $record['display_name'],
-                $record['report_data']['course_name'],
-                $record['report_data']['meeting_start_time']
+                $record['display_name'] ?? 'Unknown Student',
+                $record['report_data']['course_name'] ?? 'Unknown Course',
+                $record['report_data']['meeting_start_time'] ?? 'Unknown Time'
             )
         );
 
         // Create or update post
         $post_id = wp_insert_post($post_data);
 
+        if (is_wp_error($post_id)) {
+            $this->log_import('Failed to create post: ' . $post_id->get_error_message(), 'error');
+            return false;
+        }
+
         if ($post_id) {
+            $this->log_import('Created post with ID: ' . $post_id);
+            
             // Update ACF fields
-            update_field('student_id', $record['id'], $post_id);
-            update_field('first_name', $record['first_name'], $post_id);
-            update_field('last_name', $record['last_name'], $post_id);
+            $fields_updated = array();
+            
+            // Student info
+            $fields_updated[] = update_field('student_id', $record['id'], $post_id);
+            $fields_updated[] = update_field('first_name', $record['first_name'] ?? '', $post_id);
+            $fields_updated[] = update_field('last_name', $record['last_name'] ?? '', $post_id);
 
             // Course info
-            update_field('course_info_course_id', $record['report_data']['course_offering_id'], $post_id);
-            update_field('course_info_course_name', $record['report_data']['course_name'], $post_id);
-            update_field('course_info_term_name', $record['report_data']['term_name'], $post_id);
+            $fields_updated[] = update_field('course_info_course_id', $record['report_data']['course_offering_id'] ?? '', $post_id);
+            $fields_updated[] = update_field('course_info_course_name', $record['report_data']['course_name'] ?? '', $post_id);
+            $fields_updated[] = update_field('course_info_term_name', $record['report_data']['term_name'] ?? '', $post_id);
 
             // Attendance details
-            update_field('attendance_details_meeting_start_time', $record['report_data']['meeting_start_time'], $post_id);
-            update_field('attendance_details_meeting_end_time', $record['report_data']['meeting_end_time'], $post_id);
-            update_field('attendance_details_attendance_status', $record['report_data']['attendance_status'], $post_id);
-            update_field('attendance_details_attendance_note', $record['report_data']['attendance_note'], $post_id);
+            $fields_updated[] = update_field('attendance_details_meeting_start_time', $record['report_data']['meeting_start_time'] ?? '', $post_id);
+            $fields_updated[] = update_field('attendance_details_meeting_end_time', $record['report_data']['meeting_end_time'] ?? '', $post_id);
+            $fields_updated[] = update_field('attendance_details_attendance_status', $record['report_data']['attendance_status'] ?? '', $post_id);
+            $fields_updated[] = update_field('attendance_details_attendance_note', $record['report_data']['attendance_note'] ?? '', $post_id);
 
             // Meta info
-            update_field('meta_info_attendance_added_at', $record['report_data']['attendance_added_at'], $post_id);
-            update_field('meta_info_attendance_added_by', $record['report_data']['attendance_added_by'], $post_id);
+            $fields_updated[] = update_field('meta_info_attendance_added_at', $record['report_data']['attendance_added_at'] ?? '', $post_id);
+            $fields_updated[] = update_field('meta_info_attendance_added_by', $record['report_data']['attendance_added_by'] ?? '', $post_id);
+
+            // Log any field update failures
+            if (in_array(false, $fields_updated, true)) {
+                $this->log_import('Some ACF fields failed to update for post ID: ' . $post_id, 'warning');
+            }
+
+            return true;
         }
+
+        return false;
     }
 
     /**
