@@ -33,6 +33,8 @@ if (!class_exists('ACF')) {
 // Include required files
 require_once PBATTEND_PLUGIN_DIR . 'includes/class-post-types.php';
 require_once PBATTEND_PLUGIN_DIR . 'includes/class-acf-fields.php';
+require_once PBATTEND_PLUGIN_DIR . 'includes/class-populi-importer.php';
+require_once PBATTEND_PLUGIN_DIR . 'includes/class-admin-settings.php';
 
 // Initialize the plugin
 function pbattend_init() {
@@ -42,6 +44,14 @@ function pbattend_init() {
     // Initialize ACF fields
     if (function_exists('acf_add_local_field_group')) {
         new PBAttend_ACF_Fields();
+    }
+
+    // Initialize Populi importer
+    new PBAttend_Populi_Importer();
+
+    // Initialize admin settings
+    if (is_admin()) {
+        new PBAttend_Admin_Settings();
     }
 }
 add_action('plugins_loaded', 'pbattend_init');
@@ -58,4 +68,7 @@ register_deactivation_hook(__FILE__, 'pbattend_deactivate');
 function pbattend_deactivate() {
     // Clean up if necessary
     flush_rewrite_rules();
+    
+    // Clear scheduled cron jobs
+    wp_clear_scheduled_hook('pbattend_import_cron');
 } 
