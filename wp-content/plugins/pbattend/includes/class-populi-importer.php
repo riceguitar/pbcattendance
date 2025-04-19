@@ -38,6 +38,9 @@ class PBAttend_Populi_Importer {
         
         // Add admin notices
         add_action('admin_notices', array($this, 'display_import_notices'));
+        
+        // Add user import action
+        add_action('admin_post_pbattend_user_import', array($this, 'handle_user_import'));
     }
 
     /**
@@ -335,6 +338,26 @@ class PBAttend_Populi_Importer {
                             'name' => 'has_active_student_role',
                             'value' => 'YES',
                             'positive' => '1'
+                        ),
+                        array(
+                            'name' => 'academic_year',
+                            'value' => '72405',
+                            'positive' => '1'
+                        )
+                    )
+                ),
+                '1' => array(
+                    'logic' => 'ANY',
+                    'fields' => array(
+                        array(
+                            'name' => 'status',
+                            'value' => 'TARDY',
+                            'positive' => '1'
+                        ),
+                        array(
+                            'name' => 'status',
+                            'value' => 'ABSENT',
+                            'positive' => '1'
                         )
                     )
                 )
@@ -345,7 +368,7 @@ class PBAttend_Populi_Importer {
 
         // Add time filter if we have a last import time
         if (!empty($last_import_time)) {
-            $request['filter']['1'] = array(
+            $request['filter']['2'] = array(
                 'logic' => 'ALL',
                 'fields' => array(
                     array(
@@ -531,9 +554,13 @@ class PBAttend_Populi_Importer {
             'role' => 'subscriber'
         ));
 
-        // Store Populi ID and student ID as user meta
+        // Store Populi IDs as user meta and ACF fields
         update_user_meta($user->ID, 'populi_id', $student_id);
         update_user_meta($user->ID, 'populi_student_id', $student_data['visible_student_id']);
+        
+        // Update ACF fields
+        update_field('student_id', $student_id, 'user_' . $user->ID);
+        update_field('student_visible_id', $student_data['visible_student_id'], 'user_' . $user->ID);
 
         $this->log_import(sprintf(
             'Successfully imported/updated user: %s (ID: %d)',
@@ -571,5 +598,116 @@ class PBAttend_Populi_Importer {
             // Try to import the student immediately
             $this->import_student($student_id);
         }
+    }
+
+    /**
+     * Import users from Populi
+     */
+    public function import_users() {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            $this->log_import('User import failed: API credentials not configured', 'error');
+            return array(
+                'success' => false,
+                'message' => 'Populi API credentials not configured'
+            );
+        }
+
+        // Get all attendance records to find unique student IDs
+        $args = array(
+            'post_type' => 'pbattend_record',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        );
+        
+        $attendance_posts = get_posts($args);
+        $student_ids = array();
+        
+        foreach ($attendance_posts as $post_id) {
+            $student_id = get_field('student_id', $post_id);
+            if ($student_id && !in_array($student_id, $student_ids)) {
+                $student_ids[] = $student_id;
+            }
+        }
+
+        if (empty($student_ids)) {
+            return array(
+                'success' => false,
+                'message' => 'No student IDs found in attendance records'
+            );
+        }
+
+        $total_processed = 0;
+        $new_users = 0;
+        $updated_users = 0;
+
+        $this->log_import(sprintf('Starting user import for %d students', count($student_ids)));
+
+        foreach ($student_ids as $student_id) {
+            $result = $this->import_student($student_id);
+            if ($result) {
+                $total_processed++;
+                if (is_numeric($result)) {
+                    $new_users++;
+                } else {
+                    $updated_users++;
+                }
+            }
+        }
+
+        $message = sprintf(
+            'User import completed. Processed %d students: %d new users, %d updated users.',
+            $total_processed,
+            $new_users,
+            $updated_users
+        );
+
+        $this->log_import($message);
+        return array(
+            'success' => true,
+            'total_processed' => $total_processed,
+            'new_users' => $new_users,
+            'updated_users' => $updated_users,
+            'message' => $message
+        );
+    }
+
+    /**
+     * Handle manual user import request
+     */
+    public function handle_user_import() {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+
+        // Verify nonce
+        check_admin_referer('pbattend_user_import', 'pbattend_nonce');
+
+        // Increase execution time for import
+        set_time_limit(300); // 5 minutes
+
+        // Run the import
+        $result = $this->import_users();
+
+        // Set notice based on result
+        if ($result['success']) {
+            set_transient('pbattend_admin_notice', array(
+                'type' => 'success',
+                'message' => $result['message']
+            ), 45);
+        } else {
+            set_transient('pbattend_admin_notice', array(
+                'type' => 'error',
+                'message' => $result['message']
+            ), 45);
+        }
+
+        // Redirect back to settings page
+        wp_redirect(add_query_arg(
+            'page',
+            'pbattend-settings',
+            admin_url('edit.php?post_type=pbattend_record')
+        ));
+        exit;
     }
 } 

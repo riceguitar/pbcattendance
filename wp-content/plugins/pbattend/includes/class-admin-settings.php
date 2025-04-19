@@ -77,7 +77,19 @@ class PBAttend_Admin_Settings {
             <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post">
                 <?php wp_nonce_field('pbattend_manual_import', 'pbattend_nonce'); ?>
                 <input type="hidden" name="action" value="pbattend_manual_import">
-                <?php submit_button(__('Import Now', 'pbattend'), 'primary', 'submit', false); ?>
+                <?php submit_button(__('Import Attendance Records', 'pbattend'), 'primary', 'submit', false); ?>
+            </form>
+
+            <hr>
+
+            <h2><?php _e('User Import', 'pbattend'); ?></h2>
+            <p><?php _e('Click the button below to import WordPress users for all students in your attendance records.', 'pbattend'); ?></p>
+            <p class="description"><?php _e('This will create or update WordPress users with the Subscriber role for all students found in your attendance records.', 'pbattend'); ?></p>
+            
+            <form action="<?php echo esc_url(admin_url('admin-post.php')); ?>" method="post">
+                <?php wp_nonce_field('pbattend_user_import', 'pbattend_nonce'); ?>
+                <input type="hidden" name="action" value="pbattend_user_import">
+                <?php submit_button(__('Import Users', 'pbattend'), 'primary', 'submit', false); ?>
             </form>
 
             <hr>

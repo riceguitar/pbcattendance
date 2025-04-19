@@ -1,15 +1,17 @@
 <?php
+/**
+ * Handles ACF field registration
+ */
 class PBAttend_ACF_Fields {
     public function __construct() {
-        add_action('acf/init', array($this, 'register_attendance_fields'));
+        add_action('acf/init', array($this, 'register_fields'));
     }
 
-    public function register_attendance_fields() {
-        if (function_exists('acf_add_local_field_group')):
-
+    public function register_fields() {
+        // Register attendance record fields
         acf_add_local_field_group(array(
-            'key' => 'group_pbattend_record',
-            'title' => 'Attendance Record Details',
+            'key' => 'group_attendance_record',
+            'title' => 'Attendance Record',
             'fields' => array(
                 array(
                     'key' => 'field_student_id',
@@ -31,6 +33,24 @@ class PBAttend_ACF_Fields {
                     'name' => 'last_name',
                     'type' => 'text',
                     'required' => 1,
+                ),
+                array(
+                    'key' => 'field_review_status',
+                    'label' => 'Review Status',
+                    'name' => 'review_status',
+                    'type' => 'select',
+                    'choices' => array(
+                        'pending' => 'Pending',
+                        'approved' => 'Approved',
+                        'rejected' => 'Rejected'
+                    ),
+                    'default_value' => 'pending',
+                    'required' => 1,
+                    'wrapper' => array(
+                        'width' => '',
+                        'class' => '',
+                        'id' => ''
+                    ),
                 ),
                 array(
                     'key' => 'field_course_info',
@@ -142,6 +162,51 @@ class PBAttend_ACF_Fields {
             'hide_on_screen' => '',
         ));
 
-        endif;
+        // Register user fields
+        acf_add_local_field_group(array(
+            'key' => 'group_student_info',
+            'title' => 'Student Information',
+            'fields' => array(
+                array(
+                    'key' => 'field_student_visible_id',
+                    'label' => 'Visible Student ID',
+                    'name' => 'student_visible_id',
+                    'type' => 'text',
+                    'instructions' => 'The student ID visible in Populi',
+                    'required' => 1,
+                    'wrapper' => array(
+                        'width' => '50',
+                    ),
+                ),
+                array(
+                    'key' => 'field_student_id',
+                    'label' => 'Student ID',
+                    'name' => 'student_id',
+                    'type' => 'text',
+                    'instructions' => 'The internal student ID from Populi',
+                    'required' => 1,
+                    'wrapper' => array(
+                        'width' => '50',
+                    ),
+                ),
+            ),
+            'location' => array(
+                array(
+                    array(
+                        'param' => 'user_form',
+                        'operator' => '==',
+                        'value' => 'all',
+                    ),
+                ),
+            ),
+            'menu_order' => 0,
+            'position' => 'normal',
+            'style' => 'default',
+            'label_placement' => 'top',
+            'instruction_placement' => 'label',
+            'hide_on_screen' => '',
+            'active' => true,
+            'description' => '',
+        ));
     }
 } 

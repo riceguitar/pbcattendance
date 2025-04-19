@@ -1,0 +1,202 @@
+.pbattend-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.pbattend-header {
+    margin-bottom: 30px;
+}
+
+.pbattend-user-info {
+    background: #f8f9fa;
+    padding: 15px;
+    border-radius: 4px;
+    margin-top: 10px;
+}
+
+.pbattend-filters {
+    margin: 20px 0;
+}
+
+.pbattend-filters select {
+    min-width: 200px;
+    margin-right: 10px;
+    padding: 5px;
+}
+
+.pbattend-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+.pbattend-table th,
+.pbattend-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+.pbattend-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.status-pending {
+    background-color: #f0f0f1;
+    color: #1d2327;
+}
+
+.status-waiting {
+    background-color: #f0f6fc;
+    color: #0a4b78;
+}
+
+.status-approved {
+    background-color: #d1f7cb;
+    color: #1a4624;
+}
+
+.status-rejected {
+    background-color: #f7d7da;
+    color: #8a2424;
+}
+
+.add-notes-btn {
+    background: #2271b1;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.add-notes-btn:hover {
+    background: #135e96;
+}
+
+.pbattend-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+}
+
+.pbattend-modal-content {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: white;
+    padding: 20px;
+    border-radius: 4px;
+    width: 90%;
+    max-width: 500px;
+}
+
+.pbattend-form-group {
+    margin-bottom: 15px;
+}
+
+.pbattend-form-group label {
+    display: block;
+    margin-bottom: 5px;
+}
+
+.pbattend-form-group textarea {
+    width: 100%;
+    min-height: 100px;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.pbattend-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.pagination-links {
+    display: flex;
+    justify-content: center;
+    gap: 5px;
+    margin-top: 20px;
+}
+
+.pagination-links a,
+.pagination-links span {
+    padding: 5px 10px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    text-decoration: none;
+}
+
+.pagination-links a:hover {
+    background: #f0f0f1;
+}
+
+.pagination-links .current {
+    background: #2271b1;
+    color: white;
+    border-color: #2271b1;
+}
+
+.wp-list-table textarea {
+    width: 100%;
+    min-height: 60px;
+    padding: 5px;
+}
+
+.wp-list-table .button {
+    margin: 5px 0;
+}
+
+.notice {
+    margin: 20px 0;
+}
+
+.tablenav.bottom {
+    margin-top: 20px;
+    text-align: center;
+}
+
+.tablenav.bottom .page-numbers {
+    display: inline-block;
+    padding: 5px 10px;
+    margin: 0 2px;
+    border: 1px solid #ddd;
+    text-decoration: none;
+    background: #fff;
+}
+
+.tablenav.bottom .page-numbers.current {
+    background: #2271b1;
+    color: white;
+    border-color: #2271b1;
+    font-weight: bold;
+}
+
+.tablenav.bottom .page-numbers:hover {
+    background: #f0f0f1;
+}
+
+.tablenav.bottom .page-numbers.dots {
+    border: none;
+    background: none;
+    padding: 5px 2px;
+} 

@@ -35,6 +35,8 @@ require_once PBATTEND_PLUGIN_DIR . 'includes/class-post-types.php';
 require_once PBATTEND_PLUGIN_DIR . 'includes/class-acf-fields.php';
 require_once PBATTEND_PLUGIN_DIR . 'includes/class-populi-importer.php';
 require_once PBATTEND_PLUGIN_DIR . 'includes/class-admin-settings.php';
+require_once PBATTEND_PLUGIN_DIR . 'includes/class-notifications.php';
+require_once PBATTEND_PLUGIN_DIR . 'includes/class-frontend-controller.php';
 
 // Initialize the plugin
 function pbattend_init() {
@@ -53,15 +55,56 @@ function pbattend_init() {
     if (is_admin()) {
         new PBAttend_Admin_Settings();
     }
+
+    // Initialize notifications
+    new PBAttend_Notifications();
+
+    // Initialize frontend controller
+    new PBAttend_Frontend_Controller();
 }
 add_action('plugins_loaded', 'pbattend_init');
 
-// Activation hook
-register_activation_hook(__FILE__, 'pbattend_activate');
+// Register plugin page templates
+function pbattend_register_page_templates($templates) {
+    $templates['page-templates/attendance-dashboard.php'] = 'My Attendance Dashboard';
+    return $templates;
+}
+add_filter('theme_page_templates', 'pbattend_register_page_templates');
+
+// Load plugin page templates
+function pbattend_load_page_template($template) {
+    global $post;
+    
+    if (!$post) {
+        return $template;
+    }
+    
+    $page_template = get_post_meta($post->ID, '_wp_page_template', true);
+    
+    if ($page_template === 'page-templates/attendance-dashboard.php') {
+        $new_template = PBATTEND_PLUGIN_DIR . 'page-templates/attendance-dashboard.php';
+        
+        // Debug information for administrators
+        if (current_user_can('administrator')) {
+            error_log('PB Attend: Attempting to load template from: ' . $new_template);
+            error_log('PB Attend: Template exists: ' . (file_exists($new_template) ? 'Yes' : 'No'));
+        }
+        
+        if (file_exists($new_template)) {
+            return $new_template;
+        }
+    }
+    
+    return $template;
+}
+add_filter('page_template', 'pbattend_load_page_template');
+
+// Flush rewrite rules on activation
 function pbattend_activate() {
-    // Flush rewrite rules after creating custom post type
+    pbattend_init();
     flush_rewrite_rules();
 }
+register_activation_hook(__FILE__, 'pbattend_activate');
 
 // Deactivation hook
 register_deactivation_hook(__FILE__, 'pbattend_deactivate');
