@@ -84,7 +84,7 @@ class PBAttend_Post_Types {
                 }
                 break;
             case 'review_status':
-                $status = get_field('review_status', $post_id);
+                $status = get_field('field_review_status', $post_id);
                 $status_class = 'status-' . $status;
                 echo '<span class="review-status ' . esc_attr($status_class) . '">' . esc_html(ucfirst($status)) . '</span>';
                 break;

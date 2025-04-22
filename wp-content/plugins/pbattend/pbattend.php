@@ -67,6 +67,7 @@ add_action('plugins_loaded', 'pbattend_init');
 // Register plugin page templates
 function pbattend_register_page_templates($templates) {
     $templates['page-templates/attendance-dashboard.php'] = 'My Attendance Dashboard';
+    $templates['page-templates/attendance-editor.php'] = 'Attendance Editor';
     return $templates;
 }
 add_filter('theme_page_templates', 'pbattend_register_page_templates');
@@ -81,8 +82,9 @@ function pbattend_load_page_template($template) {
     
     $page_template = get_post_meta($post->ID, '_wp_page_template', true);
     
-    if ($page_template === 'page-templates/attendance-dashboard.php') {
-        $new_template = PBATTEND_PLUGIN_DIR . 'page-templates/attendance-dashboard.php';
+    if ($page_template === 'page-templates/attendance-dashboard.php' || 
+        $page_template === 'page-templates/attendance-editor.php') {
+        $new_template = PBATTEND_PLUGIN_DIR . $page_template;
         
         // Debug information for administrators
         if (current_user_can('administrator')) {

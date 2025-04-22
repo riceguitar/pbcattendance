@@ -41,6 +41,7 @@ class PBAttend_ACF_Fields {
                     'type' => 'select',
                     'choices' => array(
                         'pending' => 'Pending',
+                        'review' => 'In Review',
                         'approved' => 'Approved',
                         'rejected' => 'Rejected'
                     ),

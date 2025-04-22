@@ -16,11 +16,13 @@ if (!is_user_logged_in()) {
 
 $controller = new PBAttend_Frontend_Controller();
 $status = isset($_GET['status']) ? sanitize_text_field($_GET['status']) : 'all';
-$page = isset($_GET['paged']) ? intval($_GET['paged']) : 1;
+$page = isset($_GET['page_num']) ? intval($_GET['page_num']) : 1;
 $per_page = 10;
 
 $user_id = get_current_user_id();
+$user = get_userdata($user_id);
 $user_student_id = get_field('student_id', 'user_' . $user_id);
+$student_visible_id = get_field('student_visible_id', 'user_' . $user_id);
 
 // Debug information
 if (current_user_can('administrator')) {
@@ -41,20 +43,21 @@ get_header();
 <div class="wrap">
     <h1><?php the_title(); ?></h1>
 
-    <?php if (isset($_GET['updated'])) : ?>
-        <div class="notice notice-success">
-            <p>Notes updated successfully!</p>
-        </div>
-    <?php endif; ?>
-
     <?php if (!$user_student_id) : ?>
         <div class="notice notice-warning">
             <p>Your student ID is not set. Please contact the administrator.</p>
         </div>
     <?php else : ?>
+        <div class="pbattend-user-info">
+            <h2>Welcome, <?php echo esc_html($user->display_name); ?></h2>
+            <p><strong>Email Address:</strong> <?php echo esc_html($user->user_email); ?></p>
+            <p><strong>Visible Student ID:</strong> <?php echo esc_html($student_visible_id); ?></p>
+            <p><strong>Student ID:</strong> <?php echo esc_html($user_student_id); ?></p>
+        </div>
+
         <div class="pbattend-filters">
             <form method="get">
-                <select name="status">
+                <select name="status" class="status">
                     <option value="all" <?php selected($status, 'all'); ?>>All Records</option>
                     <option value="pending" <?php selected($status, 'pending'); ?>>Pending</option>
                     <option value="waiting" <?php selected($status, 'waiting'); ?>>Waiting for Review</option>
@@ -65,14 +68,14 @@ get_header();
             </form>
         </div>
 
-        <table class="wp-list-table widefat fixed striped">
+        <table class="wp-list-table widefat fixed striped" style="width: 100%;">
             <thead>
                 <tr>
                     <th>Date</th>
                     <th>Course</th>
                     <th>Status</th>
                     <th>Review Status</th>
-                    <th>Notes</th>
+                    <th width="40%">Notes</th>
                     <th>Actions</th>
                 </tr>
             </thead>
@@ -81,30 +84,36 @@ get_header();
                     <?php while ($query->have_posts()) : $query->the_post(); ?>
                         <?php
                         $record_id = get_the_ID();
-                        $can_edit = $controller->can_edit_record($record_id);
+
+
+                        $field = get_field_object('field_review_status');
+                        $value = get_field('field_review_status');
+                        $label = $field['choices'][$value];
+
+                        $review_status = $label;
+                        $can_edit = in_array($review_status, array('pending', ''));
+                        $current_notes = get_field('attendance_details_attendance_note', $record_id);
                         ?>
                         <tr>
-                            <td><?php echo get_field('attendance_details_meeting_start_time'); ?></td>
+                            <td><?php 
+                                $meeting_time = get_field('attendance_details_meeting_start_time');
+                                if ($meeting_time) {
+                                    echo date('M d, g:iA', strtotime($meeting_time));
+                                }
+                            ?></td>
                             <td><?php echo get_field('course_info_course_name'); ?></td>
                             <td><?php echo get_field('attendance_details_attendance_status'); ?></td>
-                            <td><?php echo get_field('review_status'); ?></td>
+                            <td><?php echo $review_status ?: 'Pending'; ?></td>
                             <td>
-                                <?php if ($can_edit) : ?>
-                                    <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
-                                        <?php wp_nonce_field('pbattend_update_notes', 'pbattend_nonce'); ?>
-                                        <input type="hidden" name="action" value="pbattend_update_notes">
-                                        <input type="hidden" name="record_id" value="<?php echo $record_id; ?>">
-                                        <input type="hidden" name="_wp_http_referer" value="<?php echo esc_url(get_permalink()); ?>">
-                                        <textarea name="notes" rows="2" cols="30"><?php echo get_field('attendance_details_attendance_note'); ?></textarea>
-                                        <input type="submit" value="Update Notes">
-                                    </form>
-                                <?php else : ?>
-                                    <?php echo get_field('attendance_details_attendance_note'); ?>
-                                <?php endif; ?>
+                                <div class="pbattend-notes-display">
+                                    <?php echo esc_html($current_notes); ?>
+                                </div>
                             </td>
                             <td>
-                                <?php if ($can_edit) : ?>
-                                    <a href="<?php echo get_edit_post_link($record_id); ?>" class="button">Edit</a>
+                                <?php if ($review_status == 'Pending') : ?>
+                                    <a href="<?php echo esc_url(add_query_arg('record_id', $record_id, get_permalink(get_page_by_path('attendance-editor')))); ?>">
+                                        Edit Notes
+                                    </a>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -118,13 +127,25 @@ get_header();
             </tbody>
         </table>
 
+        <div class="tablenav bottom">
         <?php
         echo paginate_links(array(
-            'total' => $query->max_num_pages,
+            'base' => add_query_arg('page_num', '%#%'),
+            'format' => '',
             'current' => $page,
-            'add_args' => array('status' => $status)
+            'total' => $query->max_num_pages,
+            'add_args' => array(
+                'status' => $status
+            ),
+            'prev_next' => true,
+            'prev_text' => '&laquo; Previous',
+            'next_text' => 'Next &raquo;',
+            'show_all' => false,
+            'end_size' => 1,
+            'mid_size' => 2
         ));
         ?>
+        </div>
     <?php endif; ?>
 </div>
 

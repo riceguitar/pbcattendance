@@ -9,7 +9,23 @@ class PBAttend_Frontend_Controller {
         
         // Register scripts and styles
         add_action('wp_enqueue_scripts', array($this, 'enqueue_assets'));
-        add_action('admin_post_pbattend_update_notes', array($this, 'handle_note_update'));
+        
+        // Add capabilities for subscribers
+        add_action('init', array($this, 'add_subscriber_capabilities'));
+
+        // Function to update review status after form submission
+        add_action('acf/save_post', array($this, 'update_review_status'), 20);
+    }
+
+    /**
+     * Add necessary capabilities for subscribers
+     */
+    public function add_subscriber_capabilities() {
+        $role = get_role('subscriber');
+        if ($role) {
+            $role->add_cap('edit_posts');
+            $role->add_cap('edit_published_posts');
+        }
     }
 
     /**
@@ -47,32 +63,6 @@ class PBAttend_Frontend_Controller {
     }
 
     /**
-     * Handle note update form submission
-     */
-    public function handle_note_update() {
-        if (!isset($_POST['pbattend_nonce']) || !wp_verify_nonce($_POST['pbattend_nonce'], 'pbattend_update_notes')) {
-            wp_die('Invalid nonce');
-        }
-
-        if (!is_user_logged_in()) {
-            wp_die('You must be logged in');
-        }
-
-        $record_id = isset($_POST['record_id']) ? intval($_POST['record_id']) : 0;
-        $notes = isset($_POST['notes']) ? sanitize_textarea_field($_POST['notes']) : '';
-
-        if (!$this->can_edit_record($record_id)) {
-            wp_die('You do not have permission to edit this record');
-        }
-
-        update_field('attendance_details_attendance_note', $notes, $record_id);
-        update_field('review_status', 'waiting', $record_id);
-
-        wp_redirect(add_query_arg('updated', '1', wp_get_referer()));
-        exit;
-    }
-
-    /**
      * Get user's attendance records
      */
     public function get_user_records($status = 'all', $page = 1, $per_page = 10) {
@@ -106,12 +96,38 @@ class PBAttend_Frontend_Controller {
      */
     public function can_edit_record($record_id) {
         $user_id = get_current_user_id();
-        $student_id = get_field('student_id', $record_id);
-        $review_status = get_field('review_status', $record_id);
-        $notes = get_field('attendance_details_attendance_note', $record_id);
+        $user_student_id = get_field('student_id', 'user_' . $user_id);
+        $record_student_id = get_field('student_id', $record_id);
+        $review_status = get_post_meta($record_id, 'review_status', true);
 
-        return $user_id == $student_id && 
-               in_array($review_status, array('pending', '')) && 
-               empty($notes);
+        error_log('PBAttend Debug - User Student ID: ' . $user_student_id);
+        error_log('PBAttend Debug - Record Student ID: ' . $record_student_id);
+        error_log('PBAttend Debug - Review Status: ' . $review_status);
+
+        return $user_student_id == $record_student_id && in_array($review_status, array('pending', ''));
+    }
+
+    /**
+     * Update review status when notes are submitted from frontend editor
+     */
+    public function update_review_status($post_id) {
+        // Only update if this is an attendance record
+        if (get_post_type($post_id) !== 'pbattend_record') {
+            return;
+        }
+
+        // Don't update if we're in the admin area
+        if (is_admin()) {
+            return;
+        }
+
+        // Check if this is coming from our frontend editor
+        // We can check the referer URL to see if it's from our editor page
+        $referer = wp_get_referer();
+        if (!$referer || strpos($referer, '/attendance-editor') === false) {
+            return;
+        }
+        
+        update_field('field_review_status', 'review', $post_id);
     }
 } 
