@@ -432,7 +432,7 @@ class PBAttend_Populi_Importer {
             $fields_updated[] = update_field('attendance_details_meeting_start_time', $record['report_data']['meeting_start_time'] ?? '', $post_id);
             $fields_updated[] = update_field('attendance_details_meeting_end_time', $record['report_data']['meeting_end_time'] ?? '', $post_id);
             $fields_updated[] = update_field('attendance_details_attendance_status', $record['report_data']['attendance_status'] ?? '', $post_id);
-            $fields_updated[] = update_field('attendance_details_attendance_note', $record['report_data']['attendance_note'] ?? '', $post_id);
+            $fields_updated[] = update_field('attendance_note', $record['report_data']['attendance_note'] ?? '', $post_id);
 
             // Meta info
             $fields_updated[] = update_field('meta_info_attendance_added_at', $record['report_data']['attendance_added_at'] ?? '', $post_id);

@@ -28,7 +28,7 @@ $review_status = get_field('field_review_status', $record_id);
 $course_name = get_field('course_info_course_name', $record_id);
 $meeting_date = get_field('attendance_details_meeting_start_time', $record_id);
 $student_id = get_field('student_id', $record_id);
-$current_notes = get_field('attendance_details_attendance_note', $record_id);
+$current_notes = get_field('attendance_note', $record_id);
 
 // Check if record can be edited
 if ($review_status !== 'pending') {
@@ -43,13 +43,13 @@ get_header();
 
 <div class="wrap">
     <div class="pbattend-editor">
-        <div class="pbattend-editor-header">
-            <a href="/attendance" class="button">
+
+            <h3>Edit Attendance Record</h3>
+            <a href="/attendance">
                 &larr; Back to Dashboard
             </a>
-            <h1>Edit Attendance Record</h1>
-        </div>
-
+        
+        
         <div class="pbattend-record-details">
             <h2>Record Details</h2>
             <table class="wp-list-table widefat fixed striped">
@@ -83,7 +83,7 @@ get_header();
             // Set up ACF form
             acf_form(array(
                 'post_id' => $record_id,
-                'fields' => array('attendance_details_attendance_note'),  // Correct field key for notes
+                'field_groups' => array('group_attendance_note'),
                 'form' => true,
                 'return' => home_url('/attendance/'),  // Redirect to dashboard
                 'submit_value' => 'Update Notes',

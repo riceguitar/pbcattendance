@@ -14,7 +14,7 @@ if (!is_user_logged_in()) {
     auth_redirect();
 }
 
-$controller = new PBAttend_Frontend_Controller();
+$controller = new \PBAttend\Frontend_Controller();
 $status = isset($_GET['status']) ? sanitize_text_field($_GET['status']) : 'all';
 $page = isset($_GET['page_num']) ? intval($_GET['page_num']) : 1;
 $per_page = 10;
@@ -41,7 +41,9 @@ get_header();
 ?>
 
 <div class="wrap">
-    <h1><?php the_title(); ?></h1>
+    <h3><?php the_title(); ?></h3>
+    <p>You can find your attendance records below. Any records with the status of "pending" can be edited for you to attach a reason for the absence or tardy.</p>
+
 
     <?php if (!$user_student_id) : ?>
         <div class="notice notice-warning">
@@ -92,7 +94,7 @@ get_header();
 
                         $review_status = $label;
                         $can_edit = in_array($review_status, array('pending', ''));
-                        $current_notes = get_field('attendance_details_attendance_note', $record_id);
+                        $current_notes = get_field('attendance_note', $record_id);
                         ?>
                         <tr>
                             <td><?php 

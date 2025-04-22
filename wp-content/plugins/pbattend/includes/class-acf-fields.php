@@ -5,6 +5,7 @@
 class PBAttend_ACF_Fields {
     public function __construct() {
         add_action('acf/init', array($this, 'register_fields'));
+        add_action('admin_init', array($this, 'migrate_notes_data'));
     }
 
     public function register_fields() {
@@ -114,12 +115,6 @@ class PBAttend_ACF_Fields {
                             ),
                             'required' => 1,
                         ),
-                        array(
-                            'key' => 'field_attendance_note',
-                            'label' => 'Notes',
-                            'name' => 'attendance_note',
-                            'type' => 'textarea',
-                        ),
                     ),
                 ),
                 array(
@@ -156,6 +151,41 @@ class PBAttend_ACF_Fields {
                 ),
             ),
             'menu_order' => 0,
+            'position' => 'normal',
+            'style' => 'default',
+            'label_placement' => 'top',
+            'instruction_placement' => 'label',
+            'hide_on_screen' => '',
+        ));
+
+        // Register standalone attendance note field
+        acf_add_local_field_group(array(
+            'key' => 'group_attendance_note',
+            'title' => 'Attendance Note',
+            'fields' => array(
+                array(
+                    'key' => 'field_attendance_note',
+                    'label' => 'Notes',
+                    'name' => 'attendance_note',
+                    'type' => 'textarea',
+                    'required' => 0,
+                    'wrapper' => array(
+                        'width' => '',
+                        'class' => '',
+                        'id' => '',
+                    ),
+                ),
+            ),
+            'location' => array(
+                array(
+                    array(
+                        'param' => 'post_type',
+                        'operator' => '==',
+                        'value' => 'pbattend_record',
+                    ),
+                ),
+            ),
+            'menu_order' => 1,
             'position' => 'normal',
             'style' => 'default',
             'label_placement' => 'top',
@@ -209,5 +239,42 @@ class PBAttend_ACF_Fields {
             'active' => true,
             'description' => '',
         ));
+    }
+
+    /**
+     * Migrate existing notes data to the new field structure
+     */
+    public function migrate_notes_data() {
+        // Only run once
+        if (get_option('pbattend_notes_migrated')) {
+            return;
+        }
+
+        // Get all attendance records
+        $args = array(
+            'post_type' => 'pbattend_record',
+            'posts_per_page' => -1,
+            'post_status' => 'any'
+        );
+        $query = new WP_Query($args);
+
+        if ($query->have_posts()) {
+            while ($query->have_posts()) {
+                $query->the_post();
+                $post_id = get_the_ID();
+                
+                // Get old notes data
+                $old_notes = get_field('attendance_details_attendance_note', $post_id);
+                
+                if ($old_notes) {
+                    // Update with new field
+                    update_field('attendance_note', $old_notes, $post_id);
+                }
+            }
+            wp_reset_postdata();
+        }
+
+        // Mark migration as complete
+        update_option('pbattend_notes_migrated', true);
     }
 } 
