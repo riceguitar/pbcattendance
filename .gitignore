@@ -1,3 +1,5 @@
 sftp-config.json
 wp-config.php
 wp-content/plugins/advanced-custom-fields-pro/
+.vscode/sftp.json
+.DS_Store

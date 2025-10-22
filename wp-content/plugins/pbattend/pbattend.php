@@ -1,10 +1,10 @@
 <?php
 /**
  * Plugin Name: PB Attend
- * Plugin URI: https://sierra.host
+ * Plugin URI: 
  * Description: A plugin for adding notes and approval workflow to attendance records.
  * Version: 1.0.0
- * Author: Sierra Host
+ * Author: 
  * Text Domain: pbattend
  */
 
