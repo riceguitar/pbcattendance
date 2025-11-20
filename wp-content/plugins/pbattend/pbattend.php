@@ -49,7 +49,7 @@ function pbattend_init() {
     }
 
     // Initialize Populi importer
-    // new PBAttend_Populi_Importer();
+    new PBAttend_Populi_Importer();
 
     // Initialize admin settings
     if (is_admin()) {
