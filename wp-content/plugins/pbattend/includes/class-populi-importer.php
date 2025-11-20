@@ -30,24 +30,66 @@ class PBAttend_Populi_Importer {
 
         // Add admin notices
         add_action('admin_notices', array($this, 'display_import_notices'));
-
-        // Add daily cron for student cache refresh
-        add_filter('cron_schedules', array($this, 'add_daily_cron_schedule'));
-        if (!wp_next_scheduled('pbattend_refresh_student_cache_cron')) {
-            wp_schedule_event(time(), 'daily', 'pbattend_refresh_student_cache_cron');
-        }
-        add_action('pbattend_refresh_student_cache_cron', array($this, 'refresh_student_cache'));
+        
+        // Hook into the MiniOrange SSO plugin to capture the PopuliID
+        add_action('mo_saml_sso_user_authenticated', array($this, 'capture_sso_attributes'), 10, 2);
     }
 
     /**
-     * Adds a 'daily' schedule to the WordPress cron schedules.
+     * Captures attributes from the SAML response and saves them to the user profile.
+     *
+     * @param int   $user_id The ID of the authenticated user.
+     * @param array $attrs   The SAML attributes from the IdP.
      */
-    public function add_daily_cron_schedule($schedules) {
-        $schedules['daily'] = array(
-            'interval' => DAY_IN_SECONDS,
-            'display'  => __('Once Daily', 'pbattend')
-        );
-        return $schedules;
+    public function capture_sso_attributes($user_id, $attrs) {
+        $this->log_import("Capturing SSO attributes for user ID: {$user_id}", 'info');
+
+        // --- Update Core User Fields ---
+        $user_data_to_update = [];
+        $user = get_userdata($user_id);
+
+        if (isset($attrs['FirstName']) && !empty($attrs['FirstName'][0])) {
+            $first_name = sanitize_text_field($attrs['FirstName'][0]);
+            if ($user->first_name !== $first_name) {
+                $user_data_to_update['first_name'] = $first_name;
+            }
+        }
+
+        if (isset($attrs['LastName']) && !empty($attrs['LastName'][0])) {
+            $last_name = sanitize_text_field($attrs['LastName'][0]);
+            if ($user->last_name !== $last_name) {
+                $user_data_to_update['last_name'] = $last_name;
+            }
+        }
+
+        if (!empty($user_data_to_update)) {
+            $user_data_to_update['ID'] = $user_id;
+            wp_update_user($user_data_to_update);
+            $this->log_import("Updated core user data (first/last name) for user ID: {$user_id}", 'info');
+        }
+
+        // --- Update User Meta Fields ---
+        $attribute_map = [
+            'PopuliID'                               => 'populi_id', // Standardize to lowercase with underscore
+            'NameID'                                 => 'sso_name_id',
+            'Email'                                  => 'sso_email',
+            'urn:oid:0.9.2342.19200300.100.1.3'       => 'sso_mail',
+            'urn:oid:0.9.2342.19200300.100.1'         => 'sso_uid',
+        ];
+
+        foreach ($attribute_map as $saml_attr => $meta_key) {
+            if (isset($attrs[$saml_attr]) && !empty($attrs[$saml_attr][0])) {
+                $value = sanitize_text_field($attrs[$saml_attr][0]);
+                $existing_value = get_user_meta($user_id, $meta_key, true);
+
+                if ($value !== $existing_value) {
+                    update_user_meta($user_id, $meta_key, $value);
+                    $this->log_import("Saved meta key '{$meta_key}' for user ID: {$user_id}", 'info');
+                }
+            } else {
+                $this->log_import("'{$saml_attr}' attribute not found in SAML response for user ID: {$user_id}", 'info');
+            }
+        }
     }
 
     /**
@@ -128,18 +170,13 @@ class PBAttend_Populi_Importer {
             return array('success' => false, 'message' => 'User not found.');
         }
 
-        // Ensure the user is linked to a Populi ID.
+        // Populi ID from SSO is required to sync.
         $populi_id = get_user_meta($user_id, 'populi_id', true);
-        if (empty($populi_id)) {
-            $this->log_import("User {$user->user_login} has no Populi ID. Attempting to sync user data first.", 'info');
-            // `sync_user_by_email` will find the populi ID and update the user meta.
-            $this->sync_user_by_email($user); 
-            $populi_id = get_user_meta($user_id, 'populi_id', true);
 
-            if (empty($populi_id)) {
-                 $this->log_import("Could not find a matching Populi record for user {$user->user_login}.", 'warning');
-                return array('success' => false, 'message' => 'Could not link user to a Populi record.');
-            }
+        if (empty($populi_id)) {
+            $message = "Sync failed for user {$user->user_login}: No 'populi_id' found in user meta. Please ensure the SSO plugin is configured to provide the 'PopuliID' attribute.";
+            $this->log_import($message, 'error');
+            return array('success' => false, 'message' => $message);
         }
 
         $last_sync_time = get_user_meta($user_id, $this->user_last_sync_key, true);
@@ -152,7 +189,7 @@ class PBAttend_Populi_Importer {
             $total_new_records = 0;
 
             while (true) {
-                $request_body = $this->build_student_attendance_request_body($populi_id, $last_sync_time, $current_page);
+                $request_body = $this->build_student_attendance_request_body($user, $last_sync_time, $current_page);
                 
                 $response = wp_remote_post($this->get_endpoint_url('attendance'), array(
                     'headers' => array(
@@ -200,7 +237,7 @@ class PBAttend_Populi_Importer {
     /**
      * Build the request body for a single student's attendance records.
      */
-    private function build_student_attendance_request_body($student_populi_id, $last_import_time = null, $page = 1) {
+    private function build_student_attendance_request_body($user, $last_import_time = null, $page = 1) {
         $academic_term = get_option('pbattend_populi_academic_term'); // Assumes term ID is stored in options
         if (empty($academic_term)) {
             $this->log_import('Cannot build request: Academic Term is not set in plugin settings.', 'error');
@@ -208,13 +245,22 @@ class PBAttend_Populi_Importer {
             $academic_term = '302974'; // Fallback to avoid fatal errors
         }
 
+        $populi_id = get_user_meta($user->ID, 'populi_id', true);
+
         $filter = array(
             '0' => array(
                 'logic' => 'ALL',
                 'fields' => array(
                     array('name' => 'has_active_student_role', 'value' => 'YES', 'positive' => '1'),
                     array('name' => 'academic_term', 'value' => $academic_term, 'positive' => '1'),
-                    array('name' => 'student', 'value' => array('id' => $student_populi_id), 'positive' => '1')
+                    array(
+                        'name' => 'student',
+                        'value' => array(
+                            'id' => $populi_id,
+                            'display_text' => $user->display_name
+                        ),
+                        'positive' => '1'
+                    )
                 )
             ),
             '1' => array(
@@ -266,6 +312,7 @@ class PBAttend_Populi_Importer {
             ));
             
             if (!empty($existing_posts)) {
+                $this->log_import("Skipping duplicate record (Populi Row ID: {$populi_row_id}).", 'info');
                 return false; // Record already exists, not an error.
             }
         }
@@ -288,7 +335,8 @@ class PBAttend_Populi_Importer {
 
         // Update ACF fields
         update_field('populi_row_id', $populi_row_id, $post_id);
-        update_field('student_id', $record['id'], $post_id);
+        update_field('populi_id', $record['id'], $post_id);
+        update_field('review_status', 'pending', $post_id); // Set default status
         update_field('first_name', $record['first_name'] ?? '', $post_id);
         update_field('last_name', $record['last_name'] ?? '', $post_id);
         update_field('course_info_course_id', $record['report_data']['course_offering_id'] ?? '', $post_id);
@@ -312,19 +360,23 @@ class PBAttend_Populi_Importer {
         if (!current_user_can('manage_options')) {
             return;
         }
+
+        $sync_url = add_query_arg(array(
+            'action' => 'pbattend_manual_sync',
+            'user_id' => $user->ID,
+            '_wpnonce' => wp_create_nonce('pbattend_manual_sync_nonce')
+        ), admin_url('admin-post.php'));
+
+        $reset_sync_url = add_query_arg('reset', '1', $sync_url);
         ?>
         <h2><?php _e('Populi Attendance Sync', 'pbattend'); ?></h2>
         <table class="form-table">
             <tr>
                 <th><label for="populi-sync"><?php _e('Manual Sync', 'pbattend'); ?></label></th>
                 <td>
-                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                        <input type="hidden" name="action" value="pbattend_manual_sync">
-                        <input type="hidden" name="user_id" value="<?php echo esc_attr($user->ID); ?>">
-                        <?php wp_nonce_field('pbattend_manual_sync_nonce', 'pbattend_nonce'); ?>
-                        <?php submit_button(__('Import/Sync Attendance Records'), 'secondary', 'submit', false); ?>
-                    </form>
-                    <p class="description"><?php _e('Click to import this student\'s latest attendance records from Populi.', 'pbattend'); ?></p>
+                    <a href="<?php echo esc_url($sync_url); ?>" class="button button-secondary"><?php _e('Import New Records'); ?></a>
+                    <a href="<?php echo esc_url($reset_sync_url); ?>" class="button button-secondary" style="margin-left: 10px;"><?php _e('Reset and Re-import All'); ?></a>
+                    <p class="description"><?php _e('Use "Import New" for fast, incremental updates. Use "Reset and Re-import" to fetch the student\'s complete attendance history for the term.', 'pbattend'); ?></p>
                 </td>
             </tr>
         </table>
@@ -335,7 +387,7 @@ class PBAttend_Populi_Importer {
      * Handles the manual sync request from the admin profile page.
      */
     public function handle_manual_sync() {
-        if (!isset($_POST['pbattend_nonce']) || !wp_verify_nonce($_POST['pbattend_nonce'], 'pbattend_manual_sync_nonce')) {
+        if (!isset($_GET['_wpnonce']) || !wp_verify_nonce($_GET['_wpnonce'], 'pbattend_manual_sync_nonce')) {
             wp_die(__('Security check failed.'));
         }
 
@@ -343,9 +395,15 @@ class PBAttend_Populi_Importer {
             wp_die(__('You do not have sufficient permissions to perform this action.'));
         }
 
-        $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
+        $user_id = isset($_GET['user_id']) ? intval($_GET['user_id']) : 0;
         if (empty($user_id)) {
             wp_die(__('Invalid user ID.'));
+        }
+
+        // Check if this is a reset request
+        if (isset($_GET['reset']) && $_GET['reset'] === '1') {
+            delete_user_meta($user_id, $this->user_last_sync_key);
+            $this->log_import("Sync timestamp reset for user ID: {$user_id}. A full re-import will be performed.", 'info');
         }
 
         $result = $this->sync_student_attendance($user_id);
@@ -364,150 +422,6 @@ class PBAttend_Populi_Importer {
 
         wp_redirect(get_edit_user_link($user_id));
         exit;
-    }
-
-    /**
-     * Sync user with POPULI data (if not already synced)
-     * This is a simplified version for finding a user's Populi ID.
-     */
-    public function sync_user_by_email($user) {
-        $credentials = $this->get_api_credentials();
-        if (empty($credentials['api_key'])) {
-            $this->log_import('User sync failed: API credentials not configured', 'error');
-            return false;
-        }
-        
-        $this->log_import(sprintf('Starting sync for user: %s (email: %s)', $user->display_name, $user->user_email), 'info');
-        
-        // This function should find the Populi person ID by matching email.
-        // The original implementation was complex. A better way would be a direct API lookup if possible.
-        // Assuming no direct email lookup, we must find a creative way.
-        // For now, let's keep the logic simple: if we can't find a user, we can't sync.
-        // The original `find_person_by_email_scan` is too slow and unreliable.
-        // A better approach is needed, maybe getting all students and caching them.
-        // For this refactor, we will assume a more direct method can be found or that admins link users manually.
-        
-        // Placeholder for a more robust email->person_id lookup.
-        $person_id = $this->find_person_id_by_email($user->user_email);
-
-        if ($person_id) {
-            $student_data = $this->get_student_data($person_id);
-            if ($student_data) {
-                update_user_meta($user->ID, 'populi_id', $person_id);
-                update_user_meta($user->ID, 'populi_student_id', $student_data['visible_student_id']);
-                update_user_meta($user->ID, 'populi_last_sync', time());
-                
-                $this->log_import(sprintf('Successfully synced user: %s, Populi ID: %d', $user->display_name, $person_id));
-                return true;
-            }
-        }
-        
-        $this->log_import('No POPULI user found for email: ' . $user->user_email, 'info');
-        return false;
-    }
-
-    /**
-     * Placeholder: Finds a person ID in Populi by their email.
-     * This needs a proper implementation.
-     */
-    private function find_person_id_by_email($email) {
-        $student_cache = get_transient('pbattend_student_cache');
-
-        // If the cache is empty, try to build it on-demand.
-        if (empty($student_cache)) {
-            $this->log_import('Student cache is empty. Attempting to build it now.', 'info');
-            $this->refresh_student_cache();
-            $student_cache = get_transient('pbattend_student_cache');
-        }
-
-        if (empty($student_cache)) {
-            $this->log_import('Failed to build student cache. Cannot look up user by email.', 'error');
-            return false;
-        }
-
-        // Case-insensitive search in the cache.
-        $email_lower = strtolower($email);
-        if (isset($student_cache[$email_lower])) {
-            $this->log_import("Found email {$email} in cache. Populi ID: {$student_cache[$email_lower]}", 'info');
-            return $student_cache[$email_lower];
-        }
-
-        $this->log_import("Email {$email} not found in student cache.", 'info');
-        return false;
-    }
-
-    /**
-     * Fetches all students from Populi and stores their email/ID in a transient cache.
-     */
-    public function refresh_student_cache() {
-        $this->log_import('Starting daily student cache refresh.', 'info');
-        $credentials = $this->get_api_credentials();
-        if (empty($credentials['api_key'])) {
-            $this->log_import('Cannot refresh student cache: API key not set.', 'error');
-            return false;
-        }
-
-        try {
-            // NOTE: The Populi API v2 `getPeople` endpoint does not seem to support filtering by role.
-            // This implementation will have to fetch all people and filter locally.
-            // This is inefficient and may cause performance issues on sites with many people.
-            // A better solution would be to find an API endpoint that allows filtering.
-            
-            $all_people = array();
-            $page = 1;
-            while (true) {
-                $response = wp_remote_get($this->get_endpoint_url('person') . '?limit=200&page=' . $page, array(
-                    'headers' => array('Authorization' => 'Bearer ' . $credentials['api_key']),
-                    'timeout' => 45
-                ));
-
-                if (is_wp_error($response)) {
-                    throw new Exception('API error while fetching people: ' . $response->get_error_message());
-                }
-                
-                $body = json_decode(wp_remote_retrieve_body($response), true);
-                if (empty($body['data'])) {
-                    break;
-                }
-
-                $all_people = array_merge($all_people, $body['data']);
-
-                if (!isset($body['has_more']) || !$body['has_more']) {
-                    break;
-                }
-                $page++;
-            }
-
-            if (empty($all_people)) {
-                throw new Exception('No people returned from the Populi API.');
-            }
-
-            $student_cache = array();
-            foreach ($all_people as $person) {
-                // We only want to cache students.
-                if (isset($person['roles']) && is_array($person['roles'])) {
-                    $is_student = false;
-                    foreach ($person['roles'] as $role) {
-                        if ($role['name'] === 'Student') {
-                            $is_student = true;
-                            break;
-                        }
-                    }
-
-                    if ($is_student && isset($person['primary_email'])) {
-                        $student_cache[strtolower($person['primary_email'])] = $person['id'];
-                    }
-                }
-            }
-            
-            set_transient('pbattend_student_cache', $student_cache, DAY_IN_SECONDS);
-            $this->log_import(sprintf('Student cache refreshed successfully. Found %d students.', count($student_cache)), 'info');
-            return true;
-
-        } catch (Exception $e) {
-            $this->log_import('Error refreshing student cache: ' . $e->getMessage(), 'error');
-            return false;
-        }
     }
 
     /**

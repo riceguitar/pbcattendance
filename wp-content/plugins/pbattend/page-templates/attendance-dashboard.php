@@ -21,7 +21,7 @@ $per_page = 1000;
 
 $user_id = get_current_user_id();
 $user = get_userdata($user_id);
-$user_student_id = get_field('student_id', 'user_' . $user_id);
+$user_populi_id = get_field('populi_id', 'user_' . $user_id);
 $student_visible_id = get_field('student_visible_id', 'user_' . $user_id);
 
 // Debug information
@@ -30,7 +30,7 @@ if (current_user_can('administrator')) {
     echo '<p>Debug Information:</p>';
     echo '<ul>';
     echo '<li>User ID: ' . $user_id . '</li>';
-    echo '<li>Student ID: ' . ($user_student_id ? $user_student_id : 'Not set') . '</li>';
+    echo '<li>Student ID: ' . ($user_populi_id ? $user_populi_id : 'Not set') . '</li>';
     echo '</ul>';
     echo '</div>';
 }
@@ -45,16 +45,16 @@ get_header();
     <p>You can find your attendance records below. Any records with the status of "pending" can be edited for you to attach a reason for the absence or tardy.</p>
 
 
-    <?php if (!$user_student_id) : ?>
+    <?php if (!$user_populi_id) : ?>
         <div class="notice notice-warning">
-            <p>Your student ID is not set. Please contact the administrator.</p>
+            <p>Your account is not yet linked with a Populi ID. Attendance records cannot be displayed. Please contact an administrator.</p>
         </div>
     <?php else : ?>
         <div class="pbattend-user-info">
             <h2>Welcome, <?php echo esc_html($user->display_name); ?></h2>
             <p><strong>Email Address:</strong> <?php echo esc_html($user->user_email); ?></p>
             <p><strong>Visible Student ID:</strong> <?php echo esc_html($student_visible_id); ?></p>
-            <p><strong>Student ID:</strong> <?php echo esc_html($user_student_id); ?></p>
+            <p><strong>Student ID:</strong> <?php echo esc_html($user_populi_id); ?></p>
         </div>
 
         <div class="pbattend-filters">

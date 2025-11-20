@@ -24,11 +24,12 @@ class PBAttend_ACF_Fields {
                     'instructions' => 'Unique identifier from Populi for duplicate prevention',
                 ),
                 array(
-                    'key' => 'field_student_id',
-                    'label' => 'Student ID',
-                    'name' => 'student_id',
+                    'key' => 'field_populi_id',
+                    'label' => 'Populi Student ID',
+                    'name' => 'populi_id',
                     'type' => 'text',
                     'required' => 1,
+                    'readonly' => 1,
                 ),
                 array(
                     'key' => 'field_first_name',
@@ -208,23 +209,24 @@ class PBAttend_ACF_Fields {
             'title' => 'Student Information',
             'fields' => array(
                 array(
+                    'key' => 'field_populi_id_user',
+                    'label' => 'Populi Student ID',
+                    'name' => 'populi_id',
+                    'type' => 'text',
+                    'instructions' => 'The internal student ID from Populi (person_id)',
+                    'required' => 0,
+                    'readonly' => 1,
+                    'wrapper' => array(
+                        'width' => '50',
+                    ),
+                ),
+                array(
                     'key' => 'field_student_visible_id',
                     'label' => 'Visible Student ID',
                     'name' => 'student_visible_id',
                     'type' => 'text',
                     'instructions' => 'The student ID visible in Populi',
                     'required' => 1,
-                    'wrapper' => array(
-                        'width' => '50',
-                    ),
-                ),
-                array(
-                    'key' => 'field_student_id',
-                    'label' => 'Student ID',
-                    'name' => 'student_id',
-                    'type' => 'text',
-                    'instructions' => 'The internal student ID from Populi (person_id)',
-                    'required' => 0,
                     'wrapper' => array(
                         'width' => '50',
                     ),

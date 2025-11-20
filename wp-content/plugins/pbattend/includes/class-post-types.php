@@ -31,18 +31,20 @@ class PBAttend_Post_Types {
 
         $args = array(
             'labels'              => $labels,
-            'public'              => true,
+            'public'              => false,
+            'publicly_queryable'  => false,
+            'exclude_from_search' => true,
             'show_ui'             => true,
             'show_in_menu'        => true,
             'show_in_nav_menus'   => false,
-            'show_in_admin_bar'   => true,
+            'show_in_admin_bar'   => false,
             'menu_position'       => 20,
             'menu_icon'           => 'dashicons-calendar-alt',
             'hierarchical'        => false,
             'supports'            => array('title', 'author'),
             'has_archive'         => false,
-            'rewrite'            => array('slug' => 'attendance'),
-            'show_in_rest'        => true,
+            'rewrite'             => false,
+            'show_in_rest'        => false,
         );
 
         register_post_type('pbattend_record', $args);
@@ -77,10 +79,11 @@ class PBAttend_Post_Types {
             case 'student_info':
                 $first_name = get_field('first_name', $post_id);
                 $last_name = get_field('last_name', $post_id);
-                $student_id = get_field('student_id', $post_id);
                 echo esc_html($first_name . ' ' . $last_name);
-                if ($student_id) {
-                    echo '<br><small>ID: ' . esc_html($student_id) . '</small>';
+                
+                $populi_id = get_field('populi_id', $post_id);
+                if ($populi_id) {
+                    echo '<br><small>ID: ' . esc_html($populi_id) . '</small>';
                 }
                 break;
             case 'review_status':

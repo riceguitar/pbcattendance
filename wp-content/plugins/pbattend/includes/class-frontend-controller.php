@@ -21,8 +21,20 @@ if (!class_exists('PBAttend\Frontend_Controller')) {
             // Add capabilities for subscribers
             add_action('init', array($this, 'add_subscriber_capabilities'));
 
+            // Hide admin bar for subscribers
+            add_action('after_setup_theme', array($this, 'hide_admin_bar_for_subscribers'));
+
             // Function to update review status after form submission
             add_action('acf/save_post', array($this, 'update_review_status'), 20);
+        }
+
+        /**
+         * Hides the admin bar for users with the 'subscriber' role.
+         */
+        public function hide_admin_bar_for_subscribers() {
+            if (current_user_can('subscriber')) {
+                show_admin_bar(false);
+            }
         }
 
         /**
@@ -77,26 +89,13 @@ if (!class_exists('PBAttend\Frontend_Controller')) {
             $user_id = get_current_user_id();
             $user = get_userdata($user_id);
             
-            // Try to get student_id from ACF field
-            $user_student_id = get_field('student_id', 'user_' . $user_id);
+            // Try to get student_id from user meta, which should be set by SSO.
+            $user_populi_id = get_user_meta($user_id, 'populi_id', true);
             
-            // If no student_id, try to sync with POPULI
-            if (!$user_student_id && $user) {
-                // Check if we should attempt sync (not attempted recently)
-                $last_sync = get_user_meta($user_id, 'populi_last_sync', true);
-                $should_sync = !$last_sync || (time() - $last_sync) > HOUR_IN_SECONDS;
-                
-                if ($should_sync) {
-                    // Try to get the importer instance and sync
-                    $importer = new PBAttend_Populi_Importer();
-                    if ($importer->sync_user_by_email($user)) {
-                        $user_student_id = get_field('student_id', 'user_' . $user_id);
-                    }
-                }
-            }
-            
-            // If still no student_id, return empty query
-            if (!$user_student_id) {
+            // If still no student_id, the user is not linked. Return empty query.
+            if (!$user_populi_id) {
+                // We don't try to sync here anymore, just return an empty result.
+                // The on-login hook handles the sync.
                 return new \WP_Query(array('post_type' => 'pbattend_record', 'post__in' => array(0)));
             }
 
@@ -109,8 +108,8 @@ if (!class_exists('PBAttend\Frontend_Controller')) {
                 'order' => 'DESC',
                 'meta_query' => array(
                     array(
-                        'key' => 'student_id',
-                        'value' => $user_student_id
+                        'key' => 'populi_id',
+                        'value' => $user_populi_id
                     )
                 )
             );
@@ -130,48 +129,39 @@ if (!class_exists('PBAttend\Frontend_Controller')) {
          */
         public function can_edit_record($record_id) {
             $user_id = get_current_user_id();
-            $user_student_id = get_field('student_id', 'user_' . $user_id);
-            $record_student_id = get_field('student_id', $record_id);
+            $user_populi_id = get_field('populi_id', 'user_' . $user_id);
+            $record_populi_id = get_field('populi_id', $record_id);
             $review_status = get_post_meta($record_id, 'review_status', true);
 
-            error_log('PBAttend Debug - User Student ID: ' . $user_student_id);
-            error_log('PBAttend Debug - Record Student ID: ' . $record_student_id);
+            error_log('PBAttend Debug - User Populi ID: ' . $user_populi_id);
+            error_log('PBAttend Debug - Record Populi ID: ' . $record_populi_id);
             error_log('PBAttend Debug - Review Status: ' . $review_status);
 
-            return $user_student_id == $record_student_id && in_array($review_status, array('pending', ''));
+            return $user_populi_id == $record_populi_id && in_array($review_status, array('pending', ''));
         }
 
         /**
          * Update review status when notes are submitted from frontend editor
          */
         public function update_review_status($post_id) {
-            error_log('PBAttend: update_review_status called for post_id: ' . $post_id);
-            
             // Only update if this is an attendance record
-            if (get_post_type($post_id) !== 'pbattend_record') {
-                error_log('PBAttend: Not an attendance record, post type: ' . get_post_type($post_id));
+            if (get_post_type($post_id) !== 'pbattend_record' || is_admin()) {
                 return;
             }
 
-            // Don't update if we're in the admin area
-            if (is_admin()) {
-                error_log('PBAttend: In admin area, skipping update');
+            // We only want to trigger this after our specific form on the front-end is submitted.
+            // The acf_form function includes a hidden field '_acf_post_id' that we can check.
+            if (!isset($_POST['_acf_post_id']) || intval($_POST['_acf_post_id']) !== $post_id) {
                 return;
             }
 
             // Get current status
-            $current_status = get_field('field_review_status', $post_id);
-            error_log('PBAttend: Current status: ' . $current_status);
+            $current_status = get_field('review_status', $post_id);
 
-            // Only update if current status is 'pending'
-            if ($current_status !== 'pending') {
-                error_log('PBAttend: Current status is not pending, skipping update');
-                return;
+            // Only update if current status is 'pending' or empty
+            if ($current_status === 'pending' || $current_status === '') {
+                update_field('review_status', 'review', $post_id);
             }
-            
-            error_log('PBAttend: Attempting to update review status to "review"');
-            $updated = update_field('field_review_status', 'review', $post_id);
-            error_log('PBAttend: Update result: ' . ($updated ? 'success' : 'failed'));
         }
     }
 } 
