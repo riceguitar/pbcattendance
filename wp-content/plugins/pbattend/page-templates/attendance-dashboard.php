@@ -17,7 +17,7 @@ if (!is_user_logged_in()) {
 $controller = new \PBAttend\Frontend_Controller();
 $status = isset($_GET['status']) ? sanitize_text_field($_GET['status']) : 'all';
 $page = isset($_GET['page_num']) ? intval($_GET['page_num']) : 1;
-$per_page = 10;
+$per_page = 1000;
 
 $user_id = get_current_user_id();
 $user = get_userdata($user_id);

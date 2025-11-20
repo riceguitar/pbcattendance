@@ -41,6 +41,12 @@ class PBAttend_Populi_Importer {
         
         // Add user import action
         add_action('admin_post_pbattend_user_import', array($this, 'handle_user_import'));
+        
+        // Add login hook for user sync
+        add_action('wp_login', array($this, 'sync_user_on_login'), 10, 2);
+        
+        // Add bulk sync action
+        add_action('admin_post_pbattend_bulk_sync', array($this, 'handle_bulk_sync'));
     }
 
     /**
@@ -168,7 +174,7 @@ class PBAttend_Populi_Importer {
     /**
      * Log import activity
      */
-    private function log_import($message, $type = 'info') {
+    public function log_import($message, $type = 'info') {
         $log = get_option($this->import_log_key, array());
         $log[] = array(
             'timestamp' => current_time('mysql'),
@@ -393,6 +399,30 @@ class PBAttend_Populi_Importer {
             return false;
         }
 
+        $populi_row_id = $record['report_data']['row_id'] ?? '';
+        
+        // WordPress-level duplicate check: Check if a post with this Populi row_id already exists
+        if (!empty($populi_row_id)) {
+            $existing_posts = get_posts(array(
+                'post_type' => 'pbattend_record',
+                'meta_query' => array(
+                    array(
+                        'key' => 'populi_row_id',
+                        'value' => $populi_row_id,
+                        'compare' => '='
+                    )
+                ),
+                'posts_per_page' => 1,
+                'fields' => 'ids'
+            ));
+            
+            if (!empty($existing_posts)) {
+                $existing_post_id = $existing_posts[0];
+                $this->log_import(sprintf('Duplicate record found (Populi row_id: %s), skipping. Existing post ID: %d', $populi_row_id, $existing_post_id), 'info');
+                return false;
+            }
+        }
+
         $post_data = array(
             'post_type' => 'pbattend_record',
             'post_status' => 'publish',
@@ -404,7 +434,7 @@ class PBAttend_Populi_Importer {
             )
         );
 
-        // Create or update post
+        // Create new post
         $post_id = wp_insert_post($post_data);
 
         if (is_wp_error($post_id)) {
@@ -417,6 +447,9 @@ class PBAttend_Populi_Importer {
             
             // Update ACF fields
             $fields_updated = array();
+            
+            // Store Populi row_id for duplicate checking
+            $fields_updated[] = update_field('populi_row_id', $populi_row_id, $post_id);
             
             // Student info
             $fields_updated[] = update_field('student_id', $record['id'], $post_id);
@@ -709,5 +742,389 @@ class PBAttend_Populi_Importer {
             admin_url('edit.php?post_type=pbattend_record')
         ));
         exit;
+    }
+
+    /**
+     * Sync user with POPULI data on login (if not already synced)
+     */
+    public function sync_user_on_login($user_login, $user) {
+        // Skip if user already has student_id
+        $existing_student_id = get_field('student_id', 'user_' . $user->ID);
+        if ($existing_student_id) {
+            return;
+        }
+        
+        // Skip if synced recently (avoid API spam)
+        $last_sync = get_user_meta($user->ID, 'populi_last_sync', true);
+        if ($last_sync && (time() - $last_sync) < DAY_IN_SECONDS) {
+            return;
+        }
+        
+        // Lookup user in POPULI by email
+        $this->sync_user_by_email($user);
+        
+        $this->log_import(sprintf(
+            'Login sync attempted for user: %s (ID: %d)',
+            $user->display_name,
+            $user->ID
+        ));
+    }
+
+    /**
+     * Lookup and sync user data from POPULI using email
+     * Since POPULI doesn't have email search, we'll use name matching from attendance records
+     */
+    public function sync_user_by_email($user) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            $this->log_import('User sync failed: API credentials not configured', 'error');
+            return false;
+        }
+        
+        $this->log_import(sprintf('Starting sync for user: %s (email: %s)', $user->display_name, $user->user_email), 'info');
+        
+        // Strategy 1: Try to find student ID from attendance records by matching name and email
+        $student_id = $this->find_student_id_from_attendance($user);
+        
+        if ($student_id) {
+            $this->log_import(sprintf('Found student ID %d from attendance records for user %s', $student_id, $user->user_email), 'info');
+            
+            // Get student data from POPULI
+            $student_data = $this->get_student_data($student_id);
+            
+            if ($student_data) {
+                // Store POPULI data in WordPress
+                update_field('student_id', $student_id, 'user_' . $user->ID);
+                update_field('student_visible_id', $student_data['visible_student_id'], 'user_' . $user->ID);
+                update_field('populi_sync_status', 'synced', 'user_' . $user->ID);
+                update_field('populi_last_sync_date', current_time('Y-m-d H:i:s'), 'user_' . $user->ID);
+                
+                update_user_meta($user->ID, 'populi_id', $student_id);
+                update_user_meta($user->ID, 'populi_student_id', $student_data['visible_student_id']);
+                update_user_meta($user->ID, 'populi_last_sync', time());
+                
+                $this->log_import(sprintf(
+                    'Successfully synced user via attendance matching: %s (ID: %d, POPULI ID: %d)',
+                    $user->display_name,
+                    $user->ID,
+                    $student_id
+                ));
+                
+                return true;
+            } else {
+                $this->log_import(sprintf('Failed to get student data for ID %d', $student_id), 'error');
+            }
+        }
+        
+        // Strategy 2: If no match found, try to get a small list of people and match by email
+        // This is more API intensive, so we'll skip it for bulk sync to prevent timeouts
+        // Only do email scanning for individual login attempts
+        $is_bulk_sync = defined('DOING_BULK_SYNC') && DOING_BULK_SYNC;
+        $person_id = false;
+        
+        if (!$is_bulk_sync) {
+            $person_id = $this->find_person_by_email_scan($user->user_email);
+        } else {
+            $this->log_import('Skipping email scan for bulk sync to prevent timeout: ' . $user->user_email, 'info');
+        }
+        
+        if ($person_id) {
+            $student_data = $this->get_student_data($person_id);
+            
+            if ($student_data) {
+                // Store POPULI data in WordPress
+                update_field('student_id', $person_id, 'user_' . $user->ID);
+                update_field('student_visible_id', $student_data['visible_student_id'], 'user_' . $user->ID);
+                update_field('populi_sync_status', 'synced', 'user_' . $user->ID);
+                update_field('populi_last_sync_date', current_time('Y-m-d H:i:s'), 'user_' . $user->ID);
+                
+                update_user_meta($user->ID, 'populi_id', $person_id);
+                update_user_meta($user->ID, 'populi_student_id', $student_data['visible_student_id']);
+                update_user_meta($user->ID, 'populi_last_sync', time());
+                
+                $this->log_import(sprintf(
+                    'Successfully synced user via email scan: %s (ID: %d, POPULI ID: %d)',
+                    $user->display_name,
+                    $user->ID,
+                    $person_id
+                ));
+                
+                return true;
+            }
+        }
+        
+        // No match found
+        $this->log_import('No POPULI user found for email: ' . $user->user_email, 'info');
+        update_field('populi_sync_status', 'not_found', 'user_' . $user->ID);
+        update_field('populi_last_sync_date', current_time('Y-m-d H:i:s'), 'user_' . $user->ID);
+        update_user_meta($user->ID, 'populi_last_sync', time());
+        
+        return false;
+    }
+
+    /**
+     * Find student ID from existing attendance records by matching name
+     */
+    private function find_student_id_from_attendance($user) {
+        // Get user's name components
+        $user_first = strtolower(trim($user->first_name));
+        $user_last = strtolower(trim($user->last_name));
+        $user_display = strtolower(trim($user->display_name));
+        
+        if (empty($user_first) && empty($user_last) && empty($user_display)) {
+            return false;
+        }
+        
+        // Search attendance records for matching names
+        $args = array(
+            'post_type' => 'pbattend_record',
+            'posts_per_page' => 50, // Reduced to speed up bulk sync
+            'fields' => 'ids'
+        );
+        
+        $attendance_posts = get_posts($args);
+        
+        foreach ($attendance_posts as $post_id) {
+            $record_first = strtolower(trim(get_field('first_name', $post_id)));
+            $record_last = strtolower(trim(get_field('last_name', $post_id)));
+            $student_id = get_field('student_id', $post_id);
+            
+            if (!$student_id) {
+                continue;
+            }
+            
+            // Try exact name match
+            if (($user_first && $record_first && $user_first === $record_first) &&
+                ($user_last && $record_last && $user_last === $record_last)) {
+                $this->log_import(sprintf('Found name match: %s %s -> Student ID %d', $record_first, $record_last, $student_id), 'info');
+                return $student_id;
+            }
+            
+            // Try partial matches for display name
+            if ($user_display && (strpos($user_display, $record_first) !== false || strpos($user_display, $record_last) !== false)) {
+                // Additional verification - check if this makes sense
+                if (strlen($record_first) > 2 && strlen($record_last) > 2) {
+                    $this->log_import(sprintf('Found partial name match: %s -> Student ID %d', $user_display, $student_id), 'info');
+                    return $student_id;
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Find person by scanning POPULI people and matching email
+     * This is API intensive, so use sparingly
+     */
+    private function find_person_by_email_scan($email) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            return false;
+        }
+        
+        // Get a limited list of people from POPULI
+        $people_url = $this->get_endpoint_url('person');
+        $response = wp_remote_get($people_url . '?limit=50', array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            ),
+            'timeout' => 20
+        ));
+        
+        if (is_wp_error($response)) {
+            $this->log_import('Failed to get people list: ' . $response->get_error_message(), 'error');
+            return false;
+        }
+        
+        $response_code = wp_remote_retrieve_response_code($response);
+        if ($response_code !== 200) {
+            $this->log_import('People list request failed with code: ' . $response_code, 'error');
+            return false;
+        }
+        
+        $people_data = json_decode(wp_remote_retrieve_body($response), true);
+        if (empty($people_data['data'])) {
+            return false;
+        }
+        
+        // Check each person's email addresses
+        foreach ($people_data['data'] as $person) {
+            $person_id = $person['id'];
+            
+            // Get email addresses for this person
+            $email_url = sprintf($this->get_endpoint_url('email'), $person_id);
+            $email_response = wp_remote_get($email_url, array(
+                'headers' => array(
+                    'Authorization' => 'Bearer ' . $credentials['api_key']
+                ),
+                'timeout' => 10
+            ));
+            
+            if (!is_wp_error($email_response) && wp_remote_retrieve_response_code($email_response) === 200) {
+                $email_data = json_decode(wp_remote_retrieve_body($email_response), true);
+                
+                if (!empty($email_data['data'])) {
+                    foreach ($email_data['data'] as $email_record) {
+                        if (strtolower($email_record['email']) === strtolower($email)) {
+                            $this->log_import(sprintf('Found email match: %s -> Person ID %d', $email, $person_id), 'info');
+                            return $person_id;
+                        }
+                    }
+                }
+            }
+            
+            // Small delay to be nice to the API
+            usleep(100000); // 0.1 seconds
+        }
+        
+        return false;
+    }
+
+    /**
+     * Get student data from POPULI for a person ID
+     */
+    private function get_student_data($person_id) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            return false;
+        }
+        
+        $student_url = sprintf($this->get_endpoint_url('student'), $person_id);
+        $response = wp_remote_get($student_url, array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            ),
+            'timeout' => 15
+        ));
+        
+        if (is_wp_error($response)) {
+            $this->log_import('Failed to get student data: ' . $response->get_error_message(), 'error');
+            return false;
+        }
+        
+        $student_data = json_decode(wp_remote_retrieve_body($response), true);
+        return $student_data ?: false;
+    }
+
+    /**
+     * Handle bulk sync request
+     */
+    public function handle_bulk_sync() {
+        if (!current_user_can('manage_options')) {
+            wp_die(__('You do not have sufficient permissions to access this page.'));
+        }
+
+        // Verify nonce
+        check_admin_referer('pbattend_bulk_sync', 'pbattend_nonce');
+
+        // Increase execution time for bulk sync
+        set_time_limit(300); // 5 minutes
+
+        // Run the bulk sync
+        $result = $this->bulk_sync_users();
+
+        // Set notice based on result
+        if ($result['success']) {
+            set_transient('pbattend_admin_notice', array(
+                'type' => 'success',
+                'message' => $result['message']
+            ), 45);
+        } else {
+            set_transient('pbattend_admin_notice', array(
+                'type' => 'error',
+                'message' => $result['message']
+            ), 45);
+        }
+
+        // Redirect back to settings page
+        wp_redirect(add_query_arg(
+            'page',
+            'pbattend-settings',
+            admin_url('edit.php?post_type=pbattend_record')
+        ));
+        exit;
+    }
+
+    /**
+     * Bulk sync all users without student_id
+     */
+    public function bulk_sync_users() {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            return array(
+                'success' => false,
+                'message' => 'POPULI API credentials not configured'
+            );
+        }
+
+        // Get all users without student_id or with failed/pending sync status
+        $all_users = get_users(array('number' => 100)); // Reduced from 200
+        $users = array();
+        
+        foreach ($all_users as $user) {
+            $student_id = get_field('student_id', 'user_' . $user->ID);
+            $sync_status = get_field('populi_sync_status', 'user_' . $user->ID);
+            
+            // Include users who:
+            // 1. Don't have a student_id, OR
+            // 2. Have failed sync status, OR  
+            // 3. Have pending sync status, OR
+            // 4. Haven't been synced yet (no sync status)
+            if (!$student_id || in_array($sync_status, array('failed', 'pending', ''))) {
+                $users[] = $user;
+                
+                // Much smaller batch to prevent timeouts
+                if (count($users) >= 10) {
+                    break;
+                }
+            }
+        }
+
+        if (empty($users)) {
+            return array(
+                'success' => true,
+                'message' => 'No users found that need syncing'
+            );
+        }
+
+        $total_processed = 0;
+        $successful_syncs = 0;
+        $failed_syncs = 0;
+
+        $this->log_import(sprintf('Starting bulk sync for %d users', count($users)));
+
+        // Set flag to indicate bulk sync mode
+        define('DOING_BULK_SYNC', true);
+
+        foreach ($users as $user) {
+            $total_processed++;
+            
+            if ($this->sync_user_by_email($user)) {
+                $successful_syncs++;
+            } else {
+                $failed_syncs++;
+            }
+            
+            // Longer delay to prevent API overload and timeouts
+            usleep(500000); // 0.5 seconds between users
+        }
+
+        $message = sprintf(
+            'Bulk sync completed. Processed %d users: %d successful, %d failed.',
+            $total_processed,
+            $successful_syncs,
+            $failed_syncs
+        );
+
+        $this->log_import($message);
+        
+        return array(
+            'success' => true,
+            'message' => $message,
+            'total_processed' => $total_processed,
+            'successful_syncs' => $successful_syncs,
+            'failed_syncs' => $failed_syncs
+        );
     }
 } 

@@ -73,14 +73,40 @@ if (!class_exists('PBAttend\Frontend_Controller')) {
         /**
          * Get user's attendance records
          */
-        public function get_user_records($status = 'all', $page = 1, $per_page = 10) {
+        public function get_user_records($status = 'all', $page = 1, $per_page = 1000) {
             $user_id = get_current_user_id();
+            $user = get_userdata($user_id);
+            
+            // Try to get student_id from ACF field
             $user_student_id = get_field('student_id', 'user_' . $user_id);
+            
+            // If no student_id, try to sync with POPULI
+            if (!$user_student_id && $user) {
+                // Check if we should attempt sync (not attempted recently)
+                $last_sync = get_user_meta($user_id, 'populi_last_sync', true);
+                $should_sync = !$last_sync || (time() - $last_sync) > HOUR_IN_SECONDS;
+                
+                if ($should_sync) {
+                    // Try to get the importer instance and sync
+                    $importer = new PBAttend_Populi_Importer();
+                    if ($importer->sync_user_by_email($user)) {
+                        $user_student_id = get_field('student_id', 'user_' . $user_id);
+                    }
+                }
+            }
+            
+            // If still no student_id, return empty query
+            if (!$user_student_id) {
+                return new \WP_Query(array('post_type' => 'pbattend_record', 'post__in' => array(0)));
+            }
 
             $args = array(
                 'post_type' => 'pbattend_record',
                 'posts_per_page' => $per_page,
                 'paged' => $page,
+                'orderby' => 'meta_value',
+                'meta_key' => 'attendance_details_meeting_start_time',
+                'order' => 'DESC',
                 'meta_query' => array(
                     array(
                         'key' => 'student_id',

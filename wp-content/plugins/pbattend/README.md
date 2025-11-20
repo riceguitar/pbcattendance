@@ -21,10 +21,13 @@ PB Attend creates a custom post type for storing attendance records, with fields
 ## Features
 
 - Custom post type for attendance records
-- Student information fields
+- Student information fields with POPULI integration
 - Course information fields
 - Attendance details (status, time, notes)
 - Meta information tracking
+- **NEW: Automatic user sync with POPULI via email lookup**
+- **NEW: SSO login integration for seamless user matching**
+- **NEW: Bulk sync tool for existing users**
 
 ## Usage
 
@@ -38,9 +41,29 @@ PB Attend creates a custom post type for storing attendance records, with fields
    - Attendance Details
 4. Save the record
 
+## POPULI Integration
+
+This plugin now includes seamless integration with POPULI for user management:
+
+### Automatic User Sync
+- Users who log in via SSO are automatically synced with POPULI
+- Email addresses are used to match WordPress users with POPULI records
+- Student IDs and other data are populated automatically
+
+### Admin Tools
+- **Bulk Sync**: Sync all existing users with POPULI data
+- **Sync Status Dashboard**: Monitor sync status for all users
+- **Import Log**: Track all sync and import activities
+
+### How It Works
+1. Student logs in via miniOrange SAML SSO
+2. Plugin checks if user has POPULI student_id
+3. If not, queries POPULI API using email address
+4. Populates WordPress user with POPULI data
+5. Attendance records are now properly matched
+
 ## Future Features
 
-- JSON import functionality
-- Approval workflow states
-- Custom capabilities for different user roles
+- Enhanced error handling and retry mechanisms
+- Scheduled sync for data updates
 - Custom taxonomies for better organization 

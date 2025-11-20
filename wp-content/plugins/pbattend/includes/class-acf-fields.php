@@ -15,6 +15,15 @@ class PBAttend_ACF_Fields {
             'title' => 'Attendance Record',
             'fields' => array(
                 array(
+                    'key' => 'field_populi_row_id',
+                    'label' => 'Populi Row ID',
+                    'name' => 'populi_row_id',
+                    'type' => 'text',
+                    'required' => 0,
+                    'readonly' => 1,
+                    'instructions' => 'Unique identifier from Populi for duplicate prevention',
+                ),
+                array(
                     'key' => 'field_student_id',
                     'label' => 'Student ID',
                     'name' => 'student_id',
@@ -214,8 +223,38 @@ class PBAttend_ACF_Fields {
                     'label' => 'Student ID',
                     'name' => 'student_id',
                     'type' => 'text',
-                    'instructions' => 'The internal student ID from Populi',
-                    'required' => 1,
+                    'instructions' => 'The internal student ID from Populi (person_id)',
+                    'required' => 0,
+                    'wrapper' => array(
+                        'width' => '50',
+                    ),
+                ),
+                array(
+                    'key' => 'field_populi_sync_status',
+                    'label' => 'POPULI Sync Status',
+                    'name' => 'populi_sync_status',
+                    'type' => 'select',
+                    'instructions' => 'Status of synchronization with POPULI',
+                    'choices' => array(
+                        'pending' => 'Pending Sync',
+                        'synced' => 'Successfully Synced',
+                        'failed' => 'Sync Failed',
+                        'not_found' => 'Not Found in POPULI'
+                    ),
+                    'default_value' => 'pending',
+                    'required' => 0,
+                    'wrapper' => array(
+                        'width' => '50',
+                    ),
+                ),
+                array(
+                    'key' => 'field_populi_last_sync',
+                    'label' => 'Last Sync Date',
+                    'name' => 'populi_last_sync_date',
+                    'type' => 'date_time_picker',
+                    'instructions' => 'When this user was last synced with POPULI',
+                    'required' => 0,
+                    'readonly' => 1,
                     'wrapper' => array(
                         'width' => '50',
                     ),
