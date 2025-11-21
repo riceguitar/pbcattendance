@@ -6,6 +6,23 @@ class PBAttend_ACF_Fields {
     public function __construct() {
         add_action('acf/init', array($this, 'register_fields'));
         add_action('admin_init', array($this, 'migrate_notes_data'));
+        
+        // Hide review fields from ACF form since we handle them in custom metabox
+        add_filter('acf/prepare_field/name=review_status', array($this, 'hide_review_fields'));
+        add_filter('acf/prepare_field/name=rejection_reason', array($this, 'hide_review_fields'));
+    }
+    
+    /**
+     * Hide review_status and rejection_reason fields from ACF form
+     * These are handled by our custom review metabox
+     */
+    public function hide_review_fields($field) {
+        // Only hide on the edit screen for attendance records
+        global $post;
+        if ($post && $post->post_type === 'pbattend_record' && is_admin()) {
+            return false; // Hide the field
+        }
+        return $field; // Show the field in other contexts
     }
 
     public function register_fields() {
@@ -63,6 +80,15 @@ class PBAttend_ACF_Fields {
                         'class' => '',
                         'id' => ''
                     ),
+                ),
+                array(
+                    'key' => 'field_rejection_reason',
+                    'label' => 'Rejection Reason',
+                    'name' => 'rejection_reason',
+                    'type' => 'textarea',
+                    'instructions' => 'If rejecting, provide a brief reason.',
+                    'rows' => 4,
+                    'new_lines' => 'wpautop', // Automatically add paragraphs
                 ),
                 array(
                     'key' => 'field_course_info',
