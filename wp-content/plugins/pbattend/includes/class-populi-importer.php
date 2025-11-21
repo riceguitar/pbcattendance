@@ -18,9 +18,6 @@ class PBAttend_Populi_Importer {
     private $user_last_sync_key = 'pbattend_last_sync_timestamp';
 
     public function __construct() {
-        // Add login hook for user sync
-        add_action('wp_login', array($this, 'sync_on_login'), 10, 2);
-        
         // Add manual sync action for admin profile page
         add_action('admin_post_pbattend_manual_sync', array($this, 'handle_manual_sync'));
         
@@ -31,8 +28,24 @@ class PBAttend_Populi_Importer {
         // Add admin notices
         add_action('admin_notices', array($this, 'display_import_notices'));
         
-        // Hook into the MiniOrange SSO plugin to capture the PopuliID
-        add_action('mo_saml_sso_user_authenticated', array($this, 'capture_sso_attributes'), 10, 2);
+        // Hook into the MiniOrange SSO plugin to capture attributes and trigger sync
+        add_action('mo_saml_sso_user_authenticated', array($this, 'handle_sso_login'), 10, 2);
+    }
+
+    /**
+     * Captures attributes and triggers sync after a successful SSO login.
+     *
+     * @param int   $user_id The ID of the authenticated user.
+     * @param array $attrs   The SAML attributes from the IdP.
+     */
+    public function handle_sso_login($user_id, $attrs) {
+        $this->log_import("handle_sso_login: SSO login detected for user ID: {$user_id}", 'info');
+        
+        // First, capture and save all attributes.
+        $this->capture_sso_attributes($user_id, $attrs);
+
+        // Now, trigger the attendance sync for this user.
+        $this->sync_student_attendance($user_id);
     }
 
     /**
@@ -141,15 +154,6 @@ class PBAttend_Populi_Importer {
         }
         
         update_option($this->import_log_key, $log);
-    }
-
-    /**
-     * Hook for wp_login to trigger sync.
-     * This should be made asynchronous in the future.
-     */
-    public function sync_on_login($user_login, $user) {
-        $this->log_import(sprintf('User %s (ID: %d) logged in. Triggering attendance sync.', $user_login, $user->ID));
-        $this->sync_student_attendance($user->ID);
     }
 
     /**
