@@ -306,6 +306,16 @@ class PBAttend_Populi_Importer {
 
         $populi_row_id = $record['report_data']['row_id'] ?? '';
         
+        // Extract course_meeting_id from row_id (format: person_id_meeting_id)
+        $course_meeting_id = '';
+        if (!empty($populi_row_id) && strpos($populi_row_id, '_') !== false) {
+            $parts = explode('_', $populi_row_id);
+            $course_meeting_id = isset($parts[1]) ? $parts[1] : '';
+            $this->log_import("Extracted course_meeting_id: {$course_meeting_id} from row_id: {$populi_row_id}", 'info');
+        } else {
+            $this->log_import("Warning: Could not extract course_meeting_id from row_id: {$populi_row_id}", 'warning');
+        }
+        
         if (!empty($populi_row_id)) {
             $existing_posts = get_posts(array(
                 'post_type' => 'pbattend_record',
@@ -346,6 +356,8 @@ class PBAttend_Populi_Importer {
         update_field('course_info_course_id', $record['report_data']['course_offering_id'] ?? '', $post_id);
         update_field('course_info_course_name', $record['report_data']['course_name'] ?? '', $post_id);
         update_field('course_info_term_name', $record['report_data']['term_name'] ?? '', $post_id);
+        update_field('course_info_course_meeting_id', $course_meeting_id, $post_id);
+        $this->log_import("Saved course_meeting_id: {$course_meeting_id} to post {$post_id}", 'info');
         update_field('attendance_details_meeting_start_time', $record['report_data']['meeting_start_time'] ?? '', $post_id);
         update_field('attendance_details_meeting_end_time', $record['report_data']['meeting_end_time'] ?? '', $post_id);
         update_field('attendance_details_attendance_status', $record['report_data']['attendance_status'] ?? '', $post_id);

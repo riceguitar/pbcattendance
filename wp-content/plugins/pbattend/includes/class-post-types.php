@@ -172,6 +172,19 @@ class PBAttend_Post_Types {
                     }
                 }
             }
+        } else {
+            // No action selected, but check if we need to update rejection reason
+            // This handles the case where status is already rejected and user is updating the reason
+            $current_status = get_field('review_status', $post_id);
+            if ($current_status === 'rejected' && isset($_POST['rejection_reason_metabox'])) {
+                $reason = sanitize_textarea_field($_POST['rejection_reason_metabox']);
+                $existing_reason = get_field('rejection_reason', $post_id);
+                
+                // Only update if the reason has changed to avoid unnecessary email sends
+                if ($reason !== $existing_reason) {
+                    update_field('rejection_reason', $reason, $post_id);
+                }
+            }
         }
     }
 
@@ -249,8 +262,15 @@ class PBAttend_Post_Types {
             'start_time' => __('Start Time', 'pbattend'),
             'review_status' => __('Review Status', 'pbattend'),
             'rejection_reason' => __('Rejection Reason', 'pbattend'),
+            'course_meeting_id' => __('Meeting ID', 'pbattend'),
             'notes' => __('Notes', 'pbattend'),
         );
+        
+        // Debug: Log column registration (remove after testing)
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('PBAttend: Registered columns: ' . implode(', ', array_keys($new_columns)));
+        }
+        
         return $new_columns;
     }
 
@@ -301,6 +321,11 @@ class PBAttend_Post_Types {
                 } else {
                     echo '—';
                 }
+                break;
+
+            case 'course_meeting_id':
+                $meeting_id = get_field('course_info_course_meeting_id', $post_id);
+                echo $meeting_id ? esc_html($meeting_id) : '—';
                 break;
 
             case 'notes':

@@ -115,6 +115,14 @@ class PBAttend_ACF_Fields {
                             'name' => 'term_name',
                             'type' => 'text',
                         ),
+                        array(
+                            'key' => 'field_course_meeting_id',
+                            'label' => 'Course Meeting ID',
+                            'name' => 'course_meeting_id',
+                            'type' => 'text',
+                            'readonly' => 1,
+                            'instructions' => 'Extracted from Populi row_id (not editable)',
+                        ),
                     ),
                 ),
                 array(
