@@ -11,7 +11,9 @@ class PBAttend_Populi_Importer {
         'attendance' => '/attendance/detail',
         'person'     => '/people',
         'student'    => '/people/%d/student',
-        'email'      => '/people/%d/emailaddresses'
+        'email'      => '/people/%d/emailaddresses',
+        'course_offering_students' => '/courseofferings/%d/students',
+        'update_attendance' => '/courseoffering/%d/student/%d/attendance/update'
     );
     
     private $import_log_key = 'pbattend_import_log';
@@ -461,5 +463,164 @@ class PBAttend_Populi_Importer {
         }
         
         return json_decode(wp_remote_retrieve_body($response), true) ?: false;
+    }
+
+    /**
+     * Get students enrolled in a specific course offering from Populi
+     * @param int $course_offering_id The course offering ID
+     * @return array|false Array of student enrollments or false on error
+     */
+    private function get_course_offering_students($course_offering_id) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            $this->log_import('Cannot fetch course offering students: API credentials not configured', 'error');
+            return false;
+        }
+
+        $students_url = sprintf($this->get_endpoint_url('course_offering_students'), $course_offering_id);
+        $response = wp_remote_get($students_url, array(
+            'headers' => array('Authorization' => 'Bearer ' . $credentials['api_key']),
+            'timeout' => 15
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log_import('Failed to get course offering students: ' . $response->get_error_message(), 'error');
+            return false;
+        }
+
+        $response_body = wp_remote_retrieve_body($response);
+        $data = json_decode($response_body, true);
+
+        if (empty($data)) {
+            $this->log_import('Empty response when fetching course offering students', 'warning');
+            return false;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Find enrollment_id by matching student_id in the students array
+     * @param array $students Array of student enrollments from Populi API
+     * @param int $student_id The student ID to match
+     * @return int|false The enrollment_id or false if not found
+     */
+    private function find_enrollment_id_by_student_id($students, $student_id) {
+        if (!is_array($students)) {
+            $this->log_import('Invalid students array provided to find_enrollment_id_by_student_id', 'error');
+            return false;
+        }
+
+        foreach ($students as $student) {
+            // Try different possible field names for the student ID
+            $student_id_fields = array('student_id', 'person_id', 'id');
+
+            foreach ($student_id_fields as $field) {
+                if (isset($student[$field]) && $student[$field] == $student_id) {
+                    if (isset($student['enrollment_id'])) {
+                        $this->log_import("Found enrollment_id {$student['enrollment_id']} for student_id {$student_id}", 'info');
+                        return $student['enrollment_id'];
+                    }
+                }
+            }
+        }
+
+        $this->log_import("Enrollment ID not found for student_id {$student_id}", 'warning');
+        return false;
+    }
+
+    /**
+     * Update attendance status in Populi for a specific enrollment
+     * @param int $course_offering_id The course offering ID
+     * @param int $enrollment_id The enrollment ID
+     * @param string $status The attendance status (e.g., 'excused')
+     * @return bool True on success, false on failure
+     */
+    private function update_populi_attendance($course_offering_id, $enrollment_id, $status) {
+        $credentials = $this->get_api_credentials();
+        if (empty($credentials['api_key'])) {
+            $this->log_import('Cannot update attendance: API credentials not configured', 'error');
+            return false;
+        }
+
+        $update_url = sprintf($this->get_endpoint_url('update_attendance'), $course_offering_id, $enrollment_id);
+        $request_body = array('status' => $status);
+
+        $response = wp_remote_request($update_url, array(
+            'method' => 'PUT',
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'Authorization' => 'Bearer ' . $credentials['api_key']
+            ),
+            'body' => json_encode($request_body),
+            'timeout' => 15
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log_import('Failed to update attendance: ' . $response->get_error_message(), 'error');
+            return false;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $response_body = wp_remote_retrieve_body($response);
+
+        if ($response_code >= 200 && $response_code < 300) {
+            $this->log_import("Successfully updated attendance to '{$status}' for enrollment {$enrollment_id}", 'info');
+            return true;
+        } else {
+            $this->log_import("Failed to update attendance. HTTP {$response_code}: {$response_body}", 'error');
+            return false;
+        }
+    }
+
+    /**
+     * Sync attendance status back to Populi when review action is "approved"
+     * Sets attendance status to "excused" in Populi
+     * @param int $post_id The attendance record post ID
+     * @return bool True on success, false on failure
+     */
+    public function sync_attendance_to_populi($post_id) {
+        $this->log_import("Starting attendance sync to Populi for post ID: {$post_id}", 'info');
+
+        // Get required IDs from the attendance record
+        $course_offering_id = get_field('course_info_course_id', $post_id);
+        $populi_id = get_field('populi_id', $post_id);
+
+        // Validate required fields
+        if (empty($course_offering_id)) {
+            $this->log_import("Cannot sync attendance: course_offering_id not found for post {$post_id}", 'error');
+            return false;
+        }
+
+        if (empty($populi_id)) {
+            $this->log_import("Cannot sync attendance: populi_id not found for post {$post_id}", 'error');
+            return false;
+        }
+
+        $this->log_import("Syncing attendance for course_offering_id: {$course_offering_id}, populi_id: {$populi_id}", 'info');
+
+        // Fetch students enrolled in the course offering
+        $students = $this->get_course_offering_students($course_offering_id);
+        if (!$students) {
+            $this->log_import("Failed to fetch students for course offering {$course_offering_id}", 'error');
+            return false;
+        }
+
+        // Find the enrollment_id for this student
+        $enrollment_id = $this->find_enrollment_id_by_student_id($students, $populi_id);
+        if (!$enrollment_id) {
+            $this->log_import("Could not find enrollment_id for student {$populi_id} in course offering {$course_offering_id}", 'warning');
+            return false;
+        }
+
+        // Update attendance status to "excused" in Populi
+        $success = $this->update_populi_attendance($course_offering_id, $enrollment_id, 'excused');
+        if ($success) {
+            $this->log_import("Successfully synced attendance status to 'excused' for post {$post_id}", 'info');
+            return true;
+        } else {
+            $this->log_import("Failed to update attendance status for post {$post_id}", 'error');
+            return false;
+        }
     }
 } 

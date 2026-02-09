@@ -159,6 +159,12 @@ class PBAttend_Post_Types {
             if ($action === 'approved') {
                 update_field('review_status', 'approved', $post_id);
                 update_field('rejection_reason', '', $post_id); // Clear rejection reason when approved
+
+                // Sync attendance status to Populi (set to "excused")
+                if (class_exists('PBAttend_Populi_Importer')) {
+                    $importer = new PBAttend_Populi_Importer();
+                    $importer->sync_attendance_to_populi($post_id);
+                }
             } elseif ($action === 'rejected') {
                 update_field('review_status', 'rejected', $post_id);
                 // Save rejection reason from metabox if provided
