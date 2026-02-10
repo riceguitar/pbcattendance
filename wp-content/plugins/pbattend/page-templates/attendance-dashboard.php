@@ -104,6 +104,7 @@ get_header();
                         $review_status = $label;
                         $can_edit = in_array($review_status, array('pending', ''));
                         $current_notes = get_field('attendance_note', $record_id);
+                        $rejection_reason = get_field('rejection_reason', $record_id);
                         ?>
                         <tr>
                             <td><?php 
@@ -119,6 +120,11 @@ get_header();
                                 <div class="pbattend-notes-display">
                                     <?php echo esc_html($current_notes); ?>
                                 </div>
+                                <?php if (!empty($rejection_reason)) : ?>
+                                    <div class="pbattend-rejection-reason">
+                                        <strong>Rejection Reason:</strong> <?php echo esc_html(wp_strip_all_tags($rejection_reason)); ?>
+                                    </div>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <?php if ($review_status == 'Pending' && empty($current_notes)) : ?>

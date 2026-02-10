@@ -301,6 +301,16 @@ select.status {
 .pbattend-notes-display {
 }
 
+.pbattend-rejection-reason {
+    margin-top: 8px;
+    padding: 6px 10px;
+    background-color: #f7d7da;
+    color: #8a2424;
+    border-left: 3px solid #8a2424;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
 .pbattend-editor {
     max-width: 800px;
     margin: 0 auto;
