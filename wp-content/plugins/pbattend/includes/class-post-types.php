@@ -81,13 +81,13 @@ class PBAttend_Post_Types {
         $rejection_reason = $rejection_reason_raw ? wp_strip_all_tags($rejection_reason_raw) : '';
         ?>
         <div id="pbattend-review-control">
-            <p><strong><?php _e('Current Status:', 'pbattend'); ?></strong> <span id="current-review-status"><?php echo esc_html(ucfirst($current_status)); ?></span></p>
+            <p><strong><?php _e('Current Status:', 'pbattend'); ?></strong> <span id="current-review-status"><?php echo esc_html($current_status === 'approved' ? 'Excused' : ucfirst($current_status)); ?></span></p>
             
             <div class="review-actions" style="margin: 15px 0;">
                 <label for="pbattend_review_action"><strong><?php _e('Review Action:', 'pbattend'); ?></strong></label>
                 <select name="pbattend_review_action" id="pbattend_review_action" style="width: 100%; margin-top: 5px;">
                     <option value=""><?php _e('— No Change —', 'pbattend'); ?></option>
-                    <option value="approved"><?php _e('Approve', 'pbattend'); ?></option>
+                    <option value="approved"><?php _e('Excused', 'pbattend'); ?></option>
                     <option value="rejected"><?php _e('Reject', 'pbattend'); ?></option>
                 </select>
             </div>
@@ -310,7 +310,8 @@ class PBAttend_Post_Types {
             case 'review_status':
                 $status = get_field('review_status', $post_id);
                 $status_class = 'status-' . ($status ?: 'pending');
-                echo '<span class="review-status ' . esc_attr($status_class) . '">' . esc_html(ucfirst($status) ?: 'Pending') . '</span>';
+                $status_label = ($status === 'approved') ? 'Excused' : (ucfirst($status) ?: 'Pending');
+                echo '<span class="review-status ' . esc_attr($status_class) . '">' . esc_html($status_label) . '</span>';
                 break;
 
             case 'rejection_reason':

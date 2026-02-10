@@ -70,7 +70,7 @@ class PBAttend_ACF_Fields {
                     'choices' => array(
                         'pending' => 'Pending',
                         'review' => 'In Review',
-                        'approved' => 'Approved',
+                        'approved' => 'Excused',
                         'rejected' => 'Rejected'
                     ),
                     'default_value' => 'pending',

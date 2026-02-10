@@ -13,7 +13,7 @@ class PBAttend_Populi_Importer {
         'student'    => '/people/%d/student',
         'email'      => '/people/%d/emailaddresses',
         'course_offering_students' => '/courseofferings/%d/students',
-        'update_attendance' => '/courseoffering/%d/student/%d/attendance/update'
+        'update_attendance' => '/courseofferings/%d/students/%d/attendance/update'
     );
     
     private $import_log_key = 'pbattend_import_log';
@@ -46,6 +46,9 @@ class PBAttend_Populi_Importer {
         // Sync on any page load when a student (with populi_id) is logged in. Debounced so we
         // don't run every request. Priority 20 so current user is set; reliable when SSO/wp_login don't fire.
         add_action('template_redirect', array($this, 'maybe_sync_on_page_load'), 20);
+
+        // Sync to Populi when Attendance Status field is set to Excused (admin edit screen)
+        add_action('acf/save_post', array($this, 'maybe_sync_on_attendance_status_excused'), 20);
     }
 
     /**
@@ -85,6 +88,23 @@ class PBAttend_Populi_Importer {
         $this->log_import("Page load: triggering attendance sync for user ID: {$user_id}", 'info');
         $this->sync_student_attendance($user_id);
         set_transient($transient_key, 1, 10 * 60); // 10 minutes
+    }
+
+    /**
+     * Sync to Populi when Attendance Status field is set to Excused (after ACF save).
+     */
+    public function maybe_sync_on_attendance_status_excused($post_id) {
+        if (get_post_type($post_id) !== 'pbattend_record') {
+            return;
+        }
+        if (!is_admin()) {
+            return;
+        }
+        if (get_field('attendance_details_attendance_status', $post_id) !== 'EXCUSED') {
+            return;
+        }
+        $this->log_import("Attendance status set to Excused for post ID: {$post_id}, syncing to Populi", 'info');
+        $this->sync_attendance_to_populi($post_id);
     }
 
     /**
@@ -631,6 +651,20 @@ class PBAttend_Populi_Importer {
             return false;
         }
 
+        $top_keys = is_array($data) ? implode(', ', array_keys($data)) : 'not-array';
+        $this->log_import("Course offering students response top-level keys: [{$top_keys}]", 'info');
+
+        // Unwrap if Populi returns a paginated list (standard format: { "object": "list", "data": [...] })
+        if (isset($data['data']) && is_array($data['data'])) {
+            $this->log_import("Unwrapped 'data' key, found " . count($data['data']) . " enrollment(s)", 'info');
+            return $data['data'];
+        }
+        if (isset($data['enrollments']) && is_array($data['enrollments'])) {
+            return $data['enrollments'];
+        }
+        if (isset($data['students']) && is_array($data['students'])) {
+            return $data['students'];
+        }
         return $data;
     }
 
@@ -646,21 +680,37 @@ class PBAttend_Populi_Importer {
             return false;
         }
 
+        $student_id_str = (string) $student_id;
+
         foreach ($students as $student) {
-            // Try different possible field names for the student ID
-            $student_id_fields = array('student_id', 'person_id', 'id');
+            if (!is_array($student)) {
+                continue;
+            }
+            // Populi often uses person_id for the person; try that first, then student_id, then id
+            $student_id_fields = array('person_id', 'student_id', 'id');
 
             foreach ($student_id_fields as $field) {
-                if (isset($student[$field]) && $student[$field] == $student_id) {
-                    if (isset($student['enrollment_id'])) {
-                        $this->log_import("Found enrollment_id {$student['enrollment_id']} for student_id {$student_id}", 'info');
-                        return $student['enrollment_id'];
-                    }
+                if (!isset($student[$field])) {
+                    continue;
+                }
+                if ((string) $student[$field] !== $student_id_str) {
+                    continue;
+                }
+                // Enrollment ID: prefer enrollment_id; else use id (when each item is an enrollment, id is enrollment_id)
+                $enrollment_id = isset($student['enrollment_id']) ? $student['enrollment_id'] : null;
+                if ($enrollment_id === null && $field !== 'id' && isset($student['id'])) {
+                    $enrollment_id = $student['id'];
+                }
+                if ($enrollment_id !== null && $enrollment_id !== '') {
+                    $this->log_import("Found enrollment_id {$enrollment_id} for student_id {$student_id}", 'info');
+                    return (int) $enrollment_id;
                 }
             }
         }
 
-        $this->log_import("Enrollment ID not found for student_id {$student_id}", 'warning');
+        $first = reset($students);
+        $sample = (is_array($first) && !empty($first)) ? implode(', ', array_keys($first)) : 'empty';
+        $this->log_import("Enrollment ID not found for student_id {$student_id}. First item keys: [{$sample}]", 'warning');
         return false;
     }
 
@@ -669,9 +719,10 @@ class PBAttend_Populi_Importer {
      * @param int $course_offering_id The course offering ID
      * @param int $enrollment_id The enrollment ID
      * @param string $status The attendance status (e.g., 'excused')
+     * @param array $extra Optional extra params: course_meeting_id, start_time
      * @return bool True on success, false on failure
      */
-    private function update_populi_attendance($course_offering_id, $enrollment_id, $status) {
+    private function update_populi_attendance($course_offering_id, $enrollment_id, $status, $extra = array()) {
         $credentials = $this->get_api_credentials();
         if (empty($credentials['api_key'])) {
             $this->log_import('Cannot update attendance: API credentials not configured', 'error');
@@ -680,6 +731,16 @@ class PBAttend_Populi_Importer {
 
         $update_url = sprintf($this->get_endpoint_url('update_attendance'), $course_offering_id, $enrollment_id);
         $request_body = array('status' => $status);
+
+        // Include course_meeting_id or start_time so Populi knows which meeting to update
+        if (!empty($extra['course_meeting_id'])) {
+            $request_body['course_meeting_id'] = (int) $extra['course_meeting_id'];
+        }
+        if (!empty($extra['start_time'])) {
+            $request_body['start_time'] = $extra['start_time'];
+        }
+
+        $this->log_import("Sending update_attendance PUT to {$update_url} with body: " . json_encode($request_body), 'info');
 
         $response = wp_remote_request($update_url, array(
             'method' => 'PUT',
@@ -732,7 +793,20 @@ class PBAttend_Populi_Importer {
             return false;
         }
 
-        $this->log_import("Syncing attendance for course_offering_id: {$course_offering_id}, populi_id: {$populi_id}", 'info');
+        $this->log_import("Syncing attendance for course_offering_id: {$course_offering_id}, populi_id (person_id): {$populi_id}", 'info');
+
+        // populi_id is the person_id. Populi enrollments use a separate student_id,
+        // so resolve person_id → student_id via the Student API first.
+        $student_data = $this->get_student_data($populi_id);
+        $student_id = null;
+        if (!empty($student_data['id'])) {
+            $student_id = $student_data['id'];
+            $this->log_import("Resolved person_id {$populi_id} to student_id {$student_id}", 'info');
+        } else {
+            $this->log_import("Could not resolve person_id {$populi_id} to student_id via Student API. Response keys: " . (is_array($student_data) ? implode(', ', array_keys($student_data)) : 'false'), 'warning');
+            // Fall back to using populi_id directly (in case some installs use person_id as student_id)
+            $student_id = $populi_id;
+        }
 
         // Fetch students enrolled in the course offering
         $students = $this->get_course_offering_students($course_offering_id);
@@ -741,15 +815,31 @@ class PBAttend_Populi_Importer {
             return false;
         }
 
-        // Find the enrollment_id for this student
-        $enrollment_id = $this->find_enrollment_id_by_student_id($students, $populi_id);
+        // Find the enrollment_id for this student using the resolved student_id
+        $enrollment_id = $this->find_enrollment_id_by_student_id($students, $student_id);
         if (!$enrollment_id) {
-            $this->log_import("Could not find enrollment_id for student {$populi_id} in course offering {$course_offering_id}", 'warning');
+            $this->log_import("Could not find enrollment_id for student_id {$student_id} (person_id {$populi_id}) in course offering {$course_offering_id}", 'warning');
+            return false;
+        }
+
+        // Gather meeting identifiers — Populi requires at least one to target the correct meeting
+        $extra = array();
+        $course_meeting_id = get_field('course_info_course_meeting_id', $post_id);
+        if (!empty($course_meeting_id)) {
+            $extra['course_meeting_id'] = $course_meeting_id;
+        }
+        $start_time = get_field('attendance_details_meeting_start_time', $post_id);
+        if (!empty($start_time)) {
+            $extra['start_time'] = $start_time;
+        }
+
+        if (empty($extra['course_meeting_id']) && empty($extra['start_time'])) {
+            $this->log_import("Cannot sync attendance for post {$post_id}: neither course_meeting_id nor start_time is available. Populi needs at least one to identify the meeting.", 'error');
             return false;
         }
 
         // Update attendance status to "excused" in Populi
-        $success = $this->update_populi_attendance($course_offering_id, $enrollment_id, 'excused');
+        $success = $this->update_populi_attendance($course_offering_id, $enrollment_id, 'excused', $extra);
         if ($success) {
             $this->log_import("Successfully synced attendance status to 'excused' for post {$post_id}", 'info');
             return true;

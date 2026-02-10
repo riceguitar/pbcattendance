@@ -25,6 +25,7 @@ todos:
     status: completed
     dependencies:
       - add-sync-method
+isProject: false
 ---
 
 # Update Populi Attendance When Review Status Changes to Excused
@@ -46,17 +47,17 @@ When an attendance record's `review_status` is changed to "excused", automatical
 - Add `'course_offering_students' => '/courseofferings/%d/students'` and `'update_attendance' => '/courseoffering/%d/student/%d/attendance/update'` to the `$endpoints` array
 - The update_attendance endpoint uses PUT method with course_offering_id and enrollment_id as path parameters
 - These endpoints will be used for fetching enrollments and updating attendance
-- Reference: https://populi.co/api/#update_attendance
+- Reference: [https://populi.co/api/#update_attendance](https://populi.co/api/#update_attendance)
 
 ### 2. Create Helper Methods in `class-populi-importer.php`
 
-- **`get_course_offering_students($course_offering_id)`**: Calls `GET /courseofferings/{courseoffering}/students` API endpoint using `wp_remote_get()`, returns array of student enrollments
-- **`find_enrollment_id_by_student_id($students, $student_id)`**: Loops through students array, matches `student_id` or `person_id` field to the provided `student_id`, returns `enrollment_id`
-- **`update_populi_attendance($course_offering_id, $enrollment_id, $status)`**: Calls `PUT /courseoffering/{courseoffering}/student/{enrollment}/attendance/update` API endpoint using `wp_remote_request()` with PUT method. The endpoint uses course_offering_id and enrollment_id as path parameters (via sprintf with endpoint template). Request body contains JSON with `status` (set to "excused")
+- `**get_course_offering_students($course_offering_id)**`: Calls `GET /courseofferings/{courseoffering}/students` API endpoint using `wp_remote_get()`, returns array of student enrollments
+- `**find_enrollment_id_by_student_id($students, $student_id)**`: Loops through students array, matches `student_id` or `person_id` field to the provided `student_id`, returns `enrollment_id`
+- `**update_populi_attendance($course_offering_id, $enrollment_id, $status)**`: Calls `PUT /courseoffering/{courseoffering}/student/{enrollment}/attendance/update` API endpoint using `wp_remote_request()` with PUT method. The endpoint uses course_offering_id and enrollment_id as path parameters (via sprintf with endpoint template). Request body contains JSON with `status` (set to "excused")
 
 ### 3. Create Main Update Method
 
-- **`sync_attendance_to_populi($post_id)`**: Main method that:
+- `**sync_attendance_to_populi($post_id)**`: Main method that:
 - Gets `course_offering_id` from `course_info_course_id` field
 - Gets `populi_id` (Student_ID) from the attendance record
 - Validates both IDs are present, logs error if missing
@@ -88,11 +89,11 @@ When an attendance record's `review_status` is changed to "excused", automatical
 - Add helper methods for API calls (after line ~464)
 - Add main `sync_attendance_to_populi()` method (after helper methods)
 
-2. **[wp-content/plugins/pbattend/includes/class-post-types.php](wp-content/plugins/pbattend/includes/class-post-types.php)**
+1. **[wp-content/plugins/pbattend/includes/class-post-types.php](wp-content/plugins/pbattend/includes/class-post-types.php)**
 
 - Modify `save_review_data()` to trigger sync when status is "excused" (around line 159)
 
-3. **[wp-content/plugins/pbattend/includes/class-notifications.php](wp-content/plugins/pbattend/includes/class-notifications.php)**
+1. **[wp-content/plugins/pbattend/includes/class-notifications.php](wp-content/plugins/pbattend/includes/class-notifications.php)**
 
 - Modify `check_review_status_change()` to trigger sync when status changes to "excused" (around line 58)
 - Modify `handle_acp_save()` to trigger sync when status changes to "excused" (around line 39)
@@ -117,10 +118,9 @@ Call PUT /courseoffering/{courseoffering}/student/{enrollment}/attendance/update
 Log result
 ```
 
-
-
 ## Notes
 
 - The existing code uses `wp_remote_post()` and `wp_remote_get()` for API calls; for PUT requests use `wp_remote_request()` with 'method' => 'PUT'
 - API authentication uses Bearer token in Authorization header (already implemented)
 - Use `GET` method for `/courseofferings/{id}/students` endpoint
+

@@ -72,7 +72,7 @@ get_header();
                     <option value="all" <?php selected($status, 'all'); ?>>All Records</option>
                     <option value="pending" <?php selected($status, 'pending'); ?>>Pending</option>
                     <option value="waiting" <?php selected($status, 'waiting'); ?>>Waiting for Review</option>
-                    <option value="approved" <?php selected($status, 'approved'); ?>>Approved</option>
+                    <option value="approved" <?php selected($status, 'approved'); ?>>Excused</option>
                     <option value="rejected" <?php selected($status, 'rejected'); ?>>Rejected</option>
                 </select>
                 <input type="submit" value="Filter">

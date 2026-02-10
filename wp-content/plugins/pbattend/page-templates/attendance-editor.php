@@ -67,7 +67,7 @@ get_header();
                     </tr>
                     <tr>
                         <th>Review Status</th>
-                        <td><?php echo esc_html(ucfirst($review_status) ?: 'Pending'); ?></td>
+                        <td><?php echo esc_html(($review_status === 'approved') ? 'Excused' : (ucfirst($review_status) ?: 'Pending')); ?></td>
                     </tr>
                 </tbody>
             </table>

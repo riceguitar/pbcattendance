@@ -66,9 +66,10 @@ class PBAttend_Notifications {
     private function send_status_notification($post_id, $new_status) {
         $to = 'david@26am.com';
         $subject = 'PBC Attendance Record Status Update';
+        $display_status = ($new_status === 'approved') ? 'Excused' : $new_status;
         $message = sprintf(
             'Your PBC attendance record has been updated to %s',
-            strtoupper($new_status)
+            strtoupper($display_status)
         );
 
         // Add record details to email
