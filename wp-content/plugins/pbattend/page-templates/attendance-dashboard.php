@@ -55,7 +55,16 @@ get_header();
             <p><strong>Email Address:</strong> <?php echo esc_html($user->user_email); ?></p>
             <p><strong>Visible Student ID:</strong> <?php echo esc_html($student_visible_id); ?></p>
             <p><strong>Student ID:</strong> <?php echo esc_html($user_populi_id); ?></p>
+            <p><a href="<?php echo esc_url(PBAttend_Populi_Importer::get_student_sync_url()); ?>" class="button">Sync attendance from Populi</a></p>
         </div>
+        <?php
+        if (isset($_GET['pbattend_synced']) && $_GET['pbattend_synced'] === '1') {
+            echo '<div class="notice notice-success"><p>Attendance synced from Populi.</p></div>';
+        }
+        if (isset($_GET['pbattend_sync_error']) && $_GET['pbattend_sync_error'] === '1') {
+            echo '<div class="notice notice-error"><p>Sync failed. Please try again or contact support.</p></div>';
+        }
+        ?>
 
         <div class="pbattend-filters">
             <form method="get">
@@ -100,7 +109,7 @@ get_header();
                             <td><?php 
                                 $meeting_time = get_field('attendance_details_meeting_start_time');
                                 if ($meeting_time) {
-                                    echo date('M d, g:iA', strtotime($meeting_time));
+                                    echo date('M d Y, g:iA', strtotime($meeting_time));
                                 }
                             ?></td>
                             <td><?php echo get_field('course_info_course_name'); ?></td>

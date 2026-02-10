@@ -22,6 +22,10 @@ class PBAttend_Populi_Importer {
     public function __construct() {
         // Add manual sync action for admin profile page
         add_action('admin_post_pbattend_manual_sync', array($this, 'handle_manual_sync'));
+
+        // Student-facing "Sync now" from dashboard (must be logged in, have populi_id)
+        add_action('admin_post_pbattend_student_sync', array($this, 'handle_student_sync'));
+        add_action('admin_post_nopriv_pbattend_student_sync', array($this, 'handle_student_sync_no_priv'));
         
         // Add button to user profile page
         add_action('show_user_profile', array($this, 'add_sync_button_to_profile'));
@@ -32,6 +36,55 @@ class PBAttend_Populi_Importer {
         
         // Hook into the MiniOrange SSO plugin to capture attributes and trigger sync
         add_action('mo_saml_sso_user_authenticated', array($this, 'handle_sso_login'), 10, 2);
+
+        // Fallback: sync on any WordPress login (wp_login). SSO uses wp_set_auth_cookie() directly
+        // so wp_login does NOT fire for SSO—only for username/password form. This ensures we
+        // sync when users log in via the WP form; if SSO hook doesn't fire (e.g. IdP cached session),
+        // visiting the dashboard will still trigger sync via maybe_sync_on_dashboard.
+        add_action('wp_login', array($this, 'maybe_sync_on_wp_login'), 10, 2);
+
+        // Sync on any page load when a student (with populi_id) is logged in. Debounced so we
+        // don't run every request. Priority 20 so current user is set; reliable when SSO/wp_login don't fire.
+        add_action('template_redirect', array($this, 'maybe_sync_on_page_load'), 20);
+    }
+
+    /**
+     * Trigger sync when user logs in via the WordPress login form (username/password).
+     * Does not run when user logs in via SSO (MiniOrange sets cookie directly, wp_login not fired).
+     */
+    public function maybe_sync_on_wp_login($user_login, $user) {
+        if (!isset($user->ID)) {
+            return;
+        }
+        if (!get_user_meta($user->ID, 'populi_id', true)) {
+            return;
+        }
+        $this->log_import("wp_login: triggering attendance sync for user ID: {$user->ID} ({$user_login})", 'info');
+        $this->sync_student_attendance($user->ID);
+    }
+
+    /**
+     * Trigger attendance sync on any page load when a logged-in user has populi_id.
+     * Debounced to once per 10 minutes per user. Does not depend on dashboard or login hooks.
+     */
+    public function maybe_sync_on_page_load() {
+        if (is_admin() || wp_doing_ajax() || wp_doing_cron()) {
+            return;
+        }
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            return;
+        }
+        if (!get_user_meta($user_id, 'populi_id', true)) {
+            return;
+        }
+        $transient_key = 'pbattend_sync_debounce_' . $user_id;
+        if (get_transient($transient_key)) {
+            return;
+        }
+        $this->log_import("Page load: triggering attendance sync for user ID: {$user_id}", 'info');
+        $this->sync_student_attendance($user_id);
+        set_transient($transient_key, 1, 10 * 60); // 10 minutes
     }
 
     /**
@@ -185,17 +238,23 @@ class PBAttend_Populi_Importer {
             return array('success' => false, 'message' => $message);
         }
 
-        $last_sync_time = get_user_meta($user_id, $this->user_last_sync_key, true);
+        // Use the date of their most recent record as the cutoff (sync everything since then).
+        $newest_record_date = $this->get_most_recent_record_date_for_student($populi_id);
+        $since_date = null;
+        if ($newest_record_date) {
+            // 1-day lookback from newest record to avoid missing boundary/timezone edge cases
+            $since_date = date('Y-m-d H:i:s', strtotime($newest_record_date) - 86400);
+        }
         $new_sync_time = current_time('mysql');
 
-        $this->log_import("Starting attendance sync for user {$user->user_login} (Populi ID: {$populi_id}). Last sync: " . ($last_sync_time ?: 'Never'));
+        $this->log_import("Starting attendance sync for user {$user->user_login} (Populi ID: {$populi_id}). Newest existing record: " . ($newest_record_date ?: 'none (full sync)'));
 
         try {
             $current_page = 1;
             $total_new_records = 0;
 
             while (true) {
-                $request_body = $this->build_student_attendance_request_body($user, $last_sync_time, $current_page);
+                $request_body = $this->build_student_attendance_request_body($user, $since_date, $current_page);
                 
                 $response = wp_remote_post($this->get_endpoint_url('attendance'), array(
                     'headers' => array(
@@ -241,6 +300,32 @@ class PBAttend_Populi_Importer {
     }
 
     /**
+     * Get the meeting date of the most recent attendance record we have for this student.
+     * Used as the "sync since" cutoff so we pull all Populi records after that date.
+     *
+     * @param string $populi_id Populi person/student ID
+     * @return string|null MySQL date of newest record's meeting_start_time, or null if none
+     */
+    private function get_most_recent_record_date_for_student($populi_id) {
+        $posts = get_posts(array(
+            'post_type'      => 'pbattend_record',
+            'posts_per_page' => 1,
+            'orderby'        => 'meta_value',
+            'meta_key'       => 'attendance_details_meeting_start_time',
+            'order'          => 'DESC',
+            'meta_query'     => array(
+                array('key' => 'populi_id', 'value' => $populi_id, 'compare' => '=')
+            ),
+            'fields'         => 'ids'
+        ));
+        if (empty($posts)) {
+            return null;
+        }
+        $date = get_field('attendance_details_meeting_start_time', $posts[0]);
+        return is_string($date) && $date !== '' ? $date : null;
+    }
+
+    /**
      * Build the request body for a single student's attendance records.
      */
     private function build_student_attendance_request_body($user, $last_import_time = null, $page = 1) {
@@ -248,7 +333,7 @@ class PBAttend_Populi_Importer {
         if (empty($academic_term)) {
             $this->log_import('Cannot build request: Academic Term is not set in plugin settings.', 'error');
             // Use a fallback or throw an exception
-            $academic_term = '302974'; // Fallback to avoid fatal errors
+            $academic_term = '302988'; // Fallback to avoid fatal errors
         }
 
         $populi_id = get_user_meta($user->ID, 'populi_id', true);
@@ -278,6 +363,7 @@ class PBAttend_Populi_Importer {
             )
         );
 
+        // $last_import_time is now "since_date" (newest record date minus 1 day, or null for full sync)
         if ($last_import_time) {
             $filter[0]['fields'][] = array(
                 'name' => 'event_start_time',
@@ -440,6 +526,55 @@ class PBAttend_Populi_Importer {
 
         wp_redirect(get_edit_user_link($user_id));
         exit;
+    }
+
+    /**
+     * Handles "Sync now" from the student dashboard. Logged-in user with populi_id only.
+     */
+    public function handle_student_sync() {
+        if (!isset($_GET['_wpnonce']) || !wp_verify_nonce($_GET['_wpnonce'], 'pbattend_student_sync')) {
+            wp_die(__('Security check failed.'));
+        }
+        $user_id = get_current_user_id();
+        if (!$user_id || !get_user_meta($user_id, 'populi_id', true)) {
+            wp_die(__('You do not have permission to sync.'));
+        }
+        $this->log_import("Student sync now: user ID {$user_id}", 'info');
+        delete_transient('pbattend_sync_debounce_' . $user_id);
+        $result = $this->sync_student_attendance($user_id);
+        $redirect = isset($_GET['redirect_to']) ? esc_url_raw(wp_unslash($_GET['redirect_to'])) : wp_get_referer();
+        if (!$redirect) {
+            $redirect = home_url('/');
+        }
+        if ($result['success']) {
+            $redirect = add_query_arg('pbattend_synced', '1', $redirect);
+        } else {
+            $redirect = add_query_arg('pbattend_sync_error', '1', $redirect);
+        }
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
+    /**
+     * Not logged in: send to login then back.
+     */
+    public function handle_student_sync_no_priv() {
+        wp_safe_redirect(wp_login_url(add_query_arg('action', 'pbattend_student_sync', admin_url('admin-post.php'))));
+        exit;
+    }
+
+    /**
+     * Get the URL for the student "Sync now" action (for use in dashboard template).
+     *
+     * @return string URL with nonce and redirect_to to current page
+     */
+    public static function get_student_sync_url() {
+        $url = add_query_arg(array(
+            'action'    => 'pbattend_student_sync',
+            '_wpnonce'  => wp_create_nonce('pbattend_student_sync'),
+            'redirect_to' => (is_ssl() ? 'https://' : 'http://') . (isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '') . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : ''),
+        ), admin_url('admin-post.php'));
+        return $url;
     }
 
     /**
