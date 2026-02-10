@@ -55,7 +55,7 @@ get_header();
             <p><strong>Email Address:</strong> <?php echo esc_html($user->user_email); ?></p>
             <p><strong>Visible Student ID:</strong> <?php echo esc_html($student_visible_id); ?></p>
             <p><strong>Student ID:</strong> <?php echo esc_html($user_populi_id); ?></p>
-            <p><a href="<?php echo esc_url(PBAttend_Populi_Importer::get_student_sync_url()); ?>" class="button">Sync attendance from Populi</a></p>
+            <a href="<?php echo esc_url(PBAttend_Populi_Importer::get_student_sync_url()); ?>" class="button">Sync attendance from Populi</a>
         </div>
         <?php
         if (isset($_GET['pbattend_synced']) && $_GET['pbattend_synced'] === '1') {
@@ -121,7 +121,7 @@ get_header();
                                 </div>
                             </td>
                             <td>
-                                <?php if ($review_status == 'Pending') : ?>
+                                <?php if ($review_status == 'Pending' && empty($current_notes)) : ?>
                                     <a href="<?php echo esc_url(add_query_arg('record_id', $record_id, get_permalink(get_page_by_path('attendance-editor')))); ?>">
                                         Edit Notes
                                     </a>

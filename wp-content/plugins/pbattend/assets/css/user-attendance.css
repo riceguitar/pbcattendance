@@ -16,6 +16,13 @@
     border: 1px solid #e2e4e7;
 }
 
+.pbattend-user-info .button {
+    display: inline-block;
+    padding: 8px;
+    font-size: 12px;
+    margin: 0;
+}
+
 .pbattend-user-info h2 {
     margin-top: 0;
     color: #1d2327;

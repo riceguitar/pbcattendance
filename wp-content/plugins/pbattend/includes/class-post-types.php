@@ -177,6 +177,11 @@ class PBAttend_Post_Types {
                         $this->send_rejection_email($post_id, $reason);
                     }
                 }
+                // Sync rejection note to Populi (note only; attendance status unchanged)
+                if (class_exists('PBAttend_Populi_Importer')) {
+                    $importer = new PBAttend_Populi_Importer();
+                    $importer->sync_rejection_note_to_populi($post_id);
+                }
             }
         } else {
             // No action selected, but check if we need to update rejection reason
@@ -235,7 +240,16 @@ class PBAttend_Post_Types {
         
         // Email body
         $message = sprintf(
-            __("Dear %s,\n\nYour attendance record for %s on %s has been reviewed and rejected.\n\nRejection Reason:\n%s\n\nIf you have questions about this decision, please contact your instructor.\n\nBest regards,\nPortland Bible College", 'pbattend'),
+            __(
+                "Dear %s,\n\n"
+                . "Your attendance record for %s on %s has been reviewed and rejected.\n\n"
+                . "Rejection Reason:\n"
+                . "%s\n\n"
+                . "If you have questions about this decision, please contact your instructor.\n\n"
+                . "Best regards,\n"
+                . "Portland Bible College",
+                'pbattend'
+            ),
             $student_name,
             $course_name ?: 'your course',
             $meeting_date,

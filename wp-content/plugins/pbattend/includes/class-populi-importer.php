@@ -553,12 +553,17 @@ class PBAttend_Populi_Importer {
      */
     public function handle_student_sync() {
         if (!isset($_GET['_wpnonce']) || !wp_verify_nonce($_GET['_wpnonce'], 'pbattend_student_sync')) {
+            file_put_contents($dl, json_encode(array('timestamp' => round(microtime(true) * 1000), 'location' => 'class-populi-importer.php:handle_student_sync', 'message' => 'nonce check failed, wp_die', 'data' => array(), 'hypothesisId' => 'H2')) . "\n", FILE_APPEND | LOCK_EX);
             wp_die(__('Security check failed.'));
         }
+        file_put_contents($dl, json_encode(array('timestamp' => round(microtime(true) * 1000), 'location' => 'class-populi-importer.php:handle_student_sync', 'message' => 'nonce passed', 'data' => array(), 'hypothesisId' => 'H2')) . "\n", FILE_APPEND | LOCK_EX);
         $user_id = get_current_user_id();
-        if (!$user_id || !get_user_meta($user_id, 'populi_id', true)) {
+        $populi_id_val = $user_id ? get_user_meta($user_id, 'populi_id', true) : '';
+        if (!$user_id || !$populi_id_val) {
+            file_put_contents($dl, json_encode(array('timestamp' => round(microtime(true) * 1000), 'location' => 'class-populi-importer.php:handle_student_sync', 'message' => 'permission check failed', 'data' => array('user_id' => $user_id, 'has_populi_id' => !empty($populi_id_val)), 'hypothesisId' => 'H3')) . "\n", FILE_APPEND | LOCK_EX);
             wp_die(__('You do not have permission to sync.'));
         }
+        file_put_contents($dl, json_encode(array('timestamp' => round(microtime(true) * 1000), 'location' => 'class-populi-importer.php:handle_student_sync', 'message' => 'permission ok, calling sync_student_attendance', 'data' => array('user_id' => $user_id), 'hypothesisId' => 'H3')) . "\n", FILE_APPEND | LOCK_EX);
         $this->log_import("Student sync now: user ID {$user_id}", 'info');
         delete_transient('pbattend_sync_debounce_' . $user_id);
         $result = $this->sync_student_attendance($user_id);
@@ -739,6 +744,9 @@ class PBAttend_Populi_Importer {
         if (!empty($extra['start_time'])) {
             $request_body['start_time'] = $extra['start_time'];
         }
+        if (!empty($extra['note'])) {
+            $request_body['note'] = $extra['note'];
+        }
 
         $this->log_import("Sending update_attendance PUT to {$update_url} with body: " . json_encode($request_body), 'info');
 
@@ -770,33 +778,27 @@ class PBAttend_Populi_Importer {
     }
 
     /**
-     * Sync attendance status back to Populi when review action is "approved"
-     * Sets attendance status to "excused" in Populi
+     * Resolve course_offering_id, enrollment_id, and meeting identifiers for a given attendance record.
+     * Used by both sync_attendance_to_populi and sync_rejection_note_to_populi.
+     *
      * @param int $post_id The attendance record post ID
-     * @return bool True on success, false on failure
+     * @return array|false Associative array with keys course_offering_id, enrollment_id, extra; or false on failure
      */
-    public function sync_attendance_to_populi($post_id) {
-        $this->log_import("Starting attendance sync to Populi for post ID: {$post_id}", 'info');
-
-        // Get required IDs from the attendance record
+    private function resolve_populi_sync_context($post_id) {
         $course_offering_id = get_field('course_info_course_id', $post_id);
         $populi_id = get_field('populi_id', $post_id);
 
-        // Validate required fields
         if (empty($course_offering_id)) {
-            $this->log_import("Cannot sync attendance: course_offering_id not found for post {$post_id}", 'error');
+            $this->log_import("Cannot resolve sync context: course_offering_id not found for post {$post_id}", 'error');
             return false;
         }
-
         if (empty($populi_id)) {
-            $this->log_import("Cannot sync attendance: populi_id not found for post {$post_id}", 'error');
+            $this->log_import("Cannot resolve sync context: populi_id not found for post {$post_id}", 'error');
             return false;
         }
 
-        $this->log_import("Syncing attendance for course_offering_id: {$course_offering_id}, populi_id (person_id): {$populi_id}", 'info');
+        $this->log_import("Resolving sync context for course_offering_id: {$course_offering_id}, populi_id (person_id): {$populi_id}", 'info');
 
-        // populi_id is the person_id. Populi enrollments use a separate student_id,
-        // so resolve person_id → student_id via the Student API first.
         $student_data = $this->get_student_data($populi_id);
         $student_id = null;
         if (!empty($student_data['id'])) {
@@ -804,25 +806,21 @@ class PBAttend_Populi_Importer {
             $this->log_import("Resolved person_id {$populi_id} to student_id {$student_id}", 'info');
         } else {
             $this->log_import("Could not resolve person_id {$populi_id} to student_id via Student API. Response keys: " . (is_array($student_data) ? implode(', ', array_keys($student_data)) : 'false'), 'warning');
-            // Fall back to using populi_id directly (in case some installs use person_id as student_id)
             $student_id = $populi_id;
         }
 
-        // Fetch students enrolled in the course offering
         $students = $this->get_course_offering_students($course_offering_id);
         if (!$students) {
             $this->log_import("Failed to fetch students for course offering {$course_offering_id}", 'error');
             return false;
         }
 
-        // Find the enrollment_id for this student using the resolved student_id
         $enrollment_id = $this->find_enrollment_id_by_student_id($students, $student_id);
         if (!$enrollment_id) {
             $this->log_import("Could not find enrollment_id for student_id {$student_id} (person_id {$populi_id}) in course offering {$course_offering_id}", 'warning');
             return false;
         }
 
-        // Gather meeting identifiers — Populi requires at least one to target the correct meeting
         $extra = array();
         $course_meeting_id = get_field('course_info_course_meeting_id', $post_id);
         if (!empty($course_meeting_id)) {
@@ -834,17 +832,72 @@ class PBAttend_Populi_Importer {
         }
 
         if (empty($extra['course_meeting_id']) && empty($extra['start_time'])) {
-            $this->log_import("Cannot sync attendance for post {$post_id}: neither course_meeting_id nor start_time is available. Populi needs at least one to identify the meeting.", 'error');
+            $this->log_import("Cannot sync for post {$post_id}: neither course_meeting_id nor start_time is available. Populi needs at least one to identify the meeting.", 'error');
             return false;
         }
 
-        // Update attendance status to "excused" in Populi
-        $success = $this->update_populi_attendance($course_offering_id, $enrollment_id, 'excused', $extra);
+        return array(
+            'course_offering_id' => $course_offering_id,
+            'enrollment_id'      => $enrollment_id,
+            'extra'              => $extra,
+        );
+    }
+
+    /**
+     * Sync attendance status back to Populi when review action is "approved"
+     * Sets attendance status to "excused" in Populi
+     * @param int $post_id The attendance record post ID
+     * @return bool True on success, false on failure
+     */
+    public function sync_attendance_to_populi($post_id) {
+        $this->log_import("Starting attendance sync to Populi for post ID: {$post_id}", 'info');
+
+        $context = $this->resolve_populi_sync_context($post_id);
+        if (!$context) {
+            return false;
+        }
+
+        $success = $this->update_populi_attendance($context['course_offering_id'], $context['enrollment_id'], 'excused', $context['extra']);
         if ($success) {
             $this->log_import("Successfully synced attendance status to 'excused' for post {$post_id}", 'info');
             return true;
         } else {
             $this->log_import("Failed to update attendance status for post {$post_id}", 'error');
+            return false;
+        }
+    }
+
+    /**
+     * Sync rejection reason to Populi as a note without changing the attendance status.
+     * Sends the rejection_reason with current datetime appended. Populi API requires status,
+     * so we pass the record's existing attendance status (TARDY/ABSENT) unchanged.
+     *
+     * @param int $post_id The attendance record post ID
+     * @return bool True on success, false on failure
+     */
+    public function sync_rejection_note_to_populi($post_id) {
+        $this->log_import("Starting rejection note sync to Populi for post ID: {$post_id}", 'info');
+
+        $reason = get_field('rejection_reason', $post_id);
+        $reason = $reason ? wp_strip_all_tags($reason) : '';
+        $note = $reason . ' [' . current_time('Y-m-d H:i:s') . ']';
+
+        $status_raw = get_field('attendance_details_attendance_status', $post_id);
+        $status = $status_raw ? strtolower($status_raw) : 'absent';
+
+        $context = $this->resolve_populi_sync_context($post_id);
+        if (!$context) {
+            return false;
+        }
+
+        $context['extra']['note'] = $note;
+
+        $success = $this->update_populi_attendance($context['course_offering_id'], $context['enrollment_id'], $status, $context['extra']);
+        if ($success) {
+            $this->log_import("Successfully synced rejection note to Populi for post {$post_id}", 'info');
+            return true;
+        } else {
+            $this->log_import("Failed to sync rejection note for post {$post_id}", 'error');
             return false;
         }
     }
