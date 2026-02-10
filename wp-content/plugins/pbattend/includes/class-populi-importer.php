@@ -37,6 +37,10 @@ class PBAttend_Populi_Importer {
         // Hook into the MiniOrange SSO plugin to capture attributes and trigger sync
         add_action('mo_saml_sso_user_authenticated', array($this, 'handle_sso_login'), 10, 2);
 
+        // More reliable: WordPress core hook when auth cookie is set (SSO and normal login).
+        // MiniOrange calls wp_set_auth_cookie() after their hook; we parse SAML from POST ourselves.
+        add_action('set_logged_in_cookie', array($this, 'handle_set_logged_in_cookie'), 10, 5);
+
         // Fallback: sync on any WordPress login (wp_login). SSO uses wp_set_auth_cookie() directly
         // so wp_login does NOT fire for SSO—only for username/password form. This ensures we
         // sync when users log in via the WP form; if SSO hook doesn't fire (e.g. IdP cached session),
@@ -46,6 +50,10 @@ class PBAttend_Populi_Importer {
         // Sync on any page load when a student (with populi_id) is logged in. Debounced so we
         // don't run every request. Priority 20 so current user is set; reliable when SSO/wp_login don't fire.
         add_action('template_redirect', array($this, 'maybe_sync_on_page_load'), 20);
+
+        // Fallback: when user lands in wp-admin with populi_id but no student_visible_id, fill from API.
+        // SSO hook may not fire in some IdP/config cases; this ensures IDs get populated.
+        add_action('admin_init', array($this, 'maybe_populate_student_ids_on_admin_load'), 5);
 
         // Sync to Populi when Attendance Status field is set to Excused (admin edit screen)
         add_action('acf/save_post', array($this, 'maybe_sync_on_attendance_status_excused'), 20);
@@ -62,6 +70,8 @@ class PBAttend_Populi_Importer {
         if (!get_user_meta($user->ID, 'populi_id', true)) {
             return;
         }
+        // Ensure student_visible_id is populated (covers users created before this fix).
+        $this->populate_student_ids_from_populi($user->ID);
         $this->log_import("wp_login: triggering attendance sync for user ID: {$user->ID} ({$user_login})", 'info');
         $this->sync_student_attendance($user->ID);
     }
@@ -85,6 +95,8 @@ class PBAttend_Populi_Importer {
         if (get_transient($transient_key)) {
             return;
         }
+        // Ensure student_visible_id is populated (covers users created before this fix).
+        $this->populate_student_ids_from_populi($user_id);
         $this->log_import("Page load: triggering attendance sync for user ID: {$user_id}", 'info');
         $this->sync_student_attendance($user_id);
         set_transient($transient_key, 1, 10 * 60); // 10 minutes
@@ -114,13 +126,125 @@ class PBAttend_Populi_Importer {
      * @param array $attrs   The SAML attributes from the IdP.
      */
     public function handle_sso_login($user_id, $attrs) {
-        $this->log_import("handle_sso_login: SSO login detected for user ID: {$user_id}", 'info');
-        
-        // First, capture and save all attributes.
-        $this->capture_sso_attributes($user_id, $attrs);
+        try {
+            $this->log_import("handle_sso_login: SSO login detected for user ID: {$user_id}", 'info');
 
-        // Now, trigger the attendance sync for this user.
-        $this->sync_student_attendance($user_id);
+            // First, capture and save all attributes.
+            $this->capture_sso_attributes($user_id, $attrs);
+
+            // Populate student IDs from Populi API if not already set.
+            $this->populate_student_ids_from_populi($user_id);
+
+            // Now, trigger the attendance sync for this user.
+            $this->sync_student_attendance($user_id);
+        } catch (\Exception $e) {
+            $this->log_import('handle_sso_login: Exception: ' . $e->getMessage(), 'error');
+            if (function_exists('error_log')) {
+                error_log('PBAttend SSO handler exception: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            }
+        }
+    }
+
+    /**
+     * Runs when WordPress sets the logged-in cookie (SSO and normal login).
+     * More reliable than MiniOrange's hook: we detect SSO by POST SAMLResponse and parse attributes ourselves.
+     *
+     * @param string $cookie_value Cookie value (unused).
+     * @param int    $expire       Expiry time (unused).
+     * @param int    $expiration   Expiration (unused).
+     * @param int    $user_id      The user ID (4th parameter from WordPress).
+     * @param string $scheme       Auth scheme (unused).
+     */
+    public function handle_set_logged_in_cookie($cookie_value, $expire, $expiration, $user_id, $scheme) {
+        if (empty($user_id) || !isset($_POST['SAMLResponse'])) {
+            return;
+        }
+        $saml_response = isset($_POST['SAMLResponse']) ? sanitize_text_field(wp_unslash($_POST['SAMLResponse'])) : '';
+        if (empty($saml_response)) {
+            return;
+        }
+        $attrs = $this->parse_saml_attributes_from_response($saml_response);
+        if (empty($attrs)) {
+            $this->log_import("set_logged_in_cookie: SAML response present for user {$user_id} but no attributes parsed (IdP may use different XML structure).", 'info');
+            return;
+        }
+        $this->log_import("set_logged_in_cookie: SSO login for user ID {$user_id}, parsing SAML attributes (keys: " . implode(', ', array_keys($attrs)) . ").", 'info');
+        try {
+            $this->capture_sso_attributes($user_id, $attrs);
+            $this->populate_student_ids_from_populi($user_id);
+            $this->sync_student_attendance($user_id);
+        } catch (\Exception $e) {
+            $this->log_import('set_logged_in_cookie: Exception: ' . $e->getMessage(), 'error');
+        }
+    }
+
+    /**
+     * Parse SAML response XML and return attributes in the same format as MiniOrange (name => [values]).
+     * Uses local-name() so namespace prefixes don't matter.
+     *
+     * @param string $base64_saml_response Base64-encoded SAML response from $_POST['SAMLResponse'].
+     * @return array Associative array AttributeName => [ value0, value1, ... ], plus NameID => [ value ].
+     */
+    private function parse_saml_attributes_from_response($base64_saml_response) {
+        $xml_string = base64_decode($base64_saml_response, true);
+        if ($xml_string === false || trim($xml_string) === '') {
+            return array();
+        }
+        libxml_use_internal_errors(true);
+        $doc = new \DOMDocument();
+        if (!$doc->loadXML($xml_string)) {
+            libxml_clear_errors();
+            return array();
+        }
+        $xpath = new \DOMXPath($doc);
+        $xpath->registerNamespace('saml', 'urn:oasis:names:tc:SAML:2.0:assertion');
+        $attrs = array();
+        // NameID (subject) - often used as email
+        $name_id_nodes = $xpath->query("//*[local-name()='NameID']");
+        if ($name_id_nodes->length > 0 && trim($name_id_nodes->item(0)->textContent) !== '') {
+            $attrs['NameID'] = array(trim($name_id_nodes->item(0)->textContent));
+        }
+        // AttributeStatement / Attribute (local-name() works regardless of namespace prefix)
+        $attribute_nodes = $xpath->query("//*[local-name()='AttributeStatement']/*[local-name()='Attribute']");
+        foreach ($attribute_nodes as $attr) {
+            $name = $attr->getAttribute('Name');
+            if ($name === '') {
+                continue;
+            }
+            $values = array();
+            $value_nodes = $xpath->query(".//*[local-name()='AttributeValue']", $attr);
+            foreach ($value_nodes as $v) {
+                $values[] = trim($v->textContent);
+            }
+            if (!empty($values)) {
+                $attrs[$name] = $values;
+            }
+        }
+        libxml_clear_errors();
+        return $attrs;
+    }
+
+    /**
+     * Admin fallback: fill student_visible_id when a user with populi_id but no student_visible_id
+     * loads any admin page. The MiniOrange SSO hook may not fire in some setups; this ensures
+     * IDs are populated. Logs to Import Log (PB Attend settings page).
+     */
+    public function maybe_populate_student_ids_on_admin_load() {
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            return;
+        }
+        $populi_id = get_user_meta($user_id, 'populi_id', true);
+        if (empty($populi_id)) {
+            return;
+        }
+        $existing = get_field('student_visible_id', 'user_' . $user_id);
+        if (!empty($existing)) {
+            $this->log_import("Populi student info (admin load): user {$user_id} already has student_visible_id '{$existing}', skip.", 'info');
+            return;
+        }
+        $this->log_import("Populi student info (admin load): user {$user_id} has populi_id {$populi_id} but no student_visible_id, fetching from API.", 'info');
+        $this->populate_student_ids_from_populi($user_id);
     }
 
     /**
@@ -177,6 +301,51 @@ class PBAttend_Populi_Importer {
             } else {
                 $this->log_import("'{$saml_attr}' attribute not found in SAML response for user ID: {$user_id}", 'info');
             }
+        }
+    }
+
+    /**
+     * Fetches student data from the Populi API and populates the student_visible_id
+     * ACF field if it is not already set. Requires populi_id (person_id) to be saved
+     * in user meta first (done by capture_sso_attributes).
+     *
+     * @param int $user_id The WordPress user ID.
+     */
+    public function populate_student_ids_from_populi($user_id) {
+        $populi_id = get_user_meta($user_id, 'populi_id', true);
+
+        if (empty($populi_id)) {
+            $this->log_import("Populi student info: No populi_id for user ID {$user_id}, skipping API lookup.", 'info');
+            return;
+        }
+
+        // Check if student_visible_id is already populated.
+        $existing_visible_id = get_field('student_visible_id', 'user_' . $user_id);
+        if (!empty($existing_visible_id)) {
+            $this->log_import("Populi student info: student_visible_id already set ('{$existing_visible_id}') for user ID {$user_id}, skipping.", 'info');
+            return;
+        }
+
+        $this->log_import("Populi student info: Fetching student data from Populi API for person_id {$populi_id} (user ID {$user_id}).", 'info');
+
+        $student_data = $this->get_student_data($populi_id);
+
+        if (empty($student_data)) {
+            $this->log_import("Populi student info: No student data returned from Populi API for person_id {$populi_id}. Check API key and that the person is a student.", 'warning');
+            return;
+        }
+
+        // Log all top-level keys for debugging.
+        $this->log_import("Populi student info: API response keys for person_id {$populi_id}: " . implode(', ', array_keys($student_data)), 'info');
+
+        // The Populi /people/{person_id}/student endpoint returns a Student object.
+        // 'id' is the student record ID (the visible student ID in Populi).
+        if (!empty($student_data['id'])) {
+            $visible_id = sanitize_text_field($student_data['id']);
+            update_field('student_visible_id', $visible_id, 'user_' . $user_id);
+            $this->log_import("Populi student info: Saved student_visible_id '{$visible_id}' for user ID {$user_id}.", 'info');
+        } else {
+            $this->log_import("Populi student info: 'id' field not found in API response for person_id {$populi_id}.", 'warning');
         }
     }
 

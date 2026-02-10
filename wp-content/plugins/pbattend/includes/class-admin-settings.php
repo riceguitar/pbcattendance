@@ -81,6 +81,7 @@ class PBAttend_Admin_Settings {
             <hr>
             
             <h2><?php _e('Import Log', 'pbattend'); ?></h2>
+            <p class="description"><?php _e('Recent sync and SSO activity. If you see no entries after SSO login, the SSO hook may not have run; student IDs can still be filled when the user visits an admin page or the front-end.', 'pbattend'); ?></p>
             <?php $this->render_import_log(); ?>
         </div>
         <?php
