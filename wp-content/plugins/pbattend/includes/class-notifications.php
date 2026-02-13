@@ -82,6 +82,7 @@ class PBAttend_Notifications {
         $message .= "\nCourse: " . $course_name;
         $message .= "\nDate: " . $attendance_date;
         
-        wp_mail($to, $subject, $message);
+        $headers = array('Reply-To: Mark Daniels (Portland Bible College) <mdaniels@portlandbiblecollege.org>');
+        wp_mail($to, $subject, $message, $headers);
     }
 } 

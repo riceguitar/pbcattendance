@@ -257,7 +257,10 @@ class PBAttend_Post_Types {
         );
         
         // Send email
-        $headers = array('Content-Type: text/plain; charset=UTF-8');
+        $headers = array(
+            'Content-Type: text/plain; charset=UTF-8',
+            'Reply-To: Mark Daniels (Portland Bible College) <mdaniels@portlandbiblecollege.org>',
+        );
         $sent = wp_mail($student_email, $subject, $message, $headers);
         
         // Log the email attempt
