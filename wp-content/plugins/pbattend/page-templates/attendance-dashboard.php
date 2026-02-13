@@ -79,7 +79,8 @@ get_header();
             </form>
         </div>
 
-        <table class="wp-list-table widefat fixed striped" style="width: 100%;">
+        <div class="pbattend-table-wrap">
+        <table class="wp-list-table widefat fixed striped pbattend-dashboard-table" style="width: 100%;">
             <thead>
                 <tr>
                     <th>Date</th>
@@ -107,16 +108,16 @@ get_header();
                         $rejection_reason = get_field('rejection_reason', $record_id);
                         ?>
                         <tr>
-                            <td><?php 
+                            <td data-label="Date"><?php
                                 $meeting_time = get_field('attendance_details_meeting_start_time');
                                 if ($meeting_time) {
                                     echo date('M d Y, g:iA', strtotime($meeting_time));
                                 }
                             ?></td>
-                            <td><?php echo get_field('course_info_course_name'); ?></td>
-                            <td><?php echo get_field('attendance_details_attendance_status'); ?></td>
-                            <td><?php echo $review_status ?: 'Pending'; ?></td>
-                            <td>
+                            <td data-label="Course"><?php echo get_field('course_info_course_name'); ?></td>
+                            <td data-label="Status"><?php echo get_field('attendance_details_attendance_status'); ?></td>
+                            <td data-label="Review Status"><?php echo $review_status ?: 'Pending'; ?></td>
+                            <td data-label="Notes">
                                 <div class="pbattend-notes-display">
                                     <?php echo esc_html($current_notes); ?>
                                 </div>
@@ -126,7 +127,7 @@ get_header();
                                     </div>
                                 <?php endif; ?>
                             </td>
-                            <td>
+                            <td data-label="Actions">
                                 <?php if ($review_status == 'Pending' && empty($current_notes)) : ?>
                                     <a href="<?php echo esc_url(add_query_arg('record_id', $record_id, get_permalink(get_page_by_path('attendance-editor')))); ?>">
                                         Edit Notes
@@ -143,6 +144,7 @@ get_header();
                 <?php endif; ?>
             </tbody>
         </table>
+        </div>
 
         <div class="tablenav bottom">
         <?php
